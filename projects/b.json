@@ -1,0 +1,83 @@
+{
+  "name": "b",
+  "nodes": [
+    {
+      "name": "Servo 2",
+      "type": "device.servo",
+      "params": {
+        "pin": "9",
+        "angle": 90,
+        "hold_ms": 0
+      },
+      "_x": 195.91832546201374,
+      "_y": 151.1069155989657
+    },
+    {
+      "name": "On Repeat 6",
+      "type": "device.on_repeat",
+      "params": {},
+      "_x": 94.359375,
+      "_y": 152.0
+    },
+    {
+      "name": "Servo 8",
+      "type": "device.servo",
+      "params": {
+        "pin": "9",
+        "angle": 0,
+        "hold_ms": 0
+      },
+      "_x": 326.6875,
+      "_y": 148.46875
+    },
+    {
+      "name": "Wait 12",
+      "type": "device.wait",
+      "params": {
+        "ms": 3000
+      },
+      "_x": 259.8671875,
+      "_y": 148.47265625
+    },
+    {
+      "name": "Wait 13",
+      "type": "device.wait",
+      "params": {
+        "ms": 8000
+      },
+      "_x": 384.2142672707617,
+      "_y": 148.09857901331608
+    }
+  ],
+  "connections": {
+    "On Repeat 6": [
+      {
+        "to": "Servo 2",
+        "out": 0,
+        "in": 0
+      }
+    ],
+    "Servo 8": [
+      {
+        "to": "Wait 13",
+        "out": 0,
+        "in": 0
+      }
+    ],
+    "Servo 2": [
+      {
+        "to": "Wait 12",
+        "out": 0,
+        "in": 0
+      }
+    ],
+    "Wait 12": [
+      {
+        "to": "Servo 8",
+        "out": 0,
+        "in": 0
+      }
+    ]
+  },
+  "kind": "servo"
+}

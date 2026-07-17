@@ -1,0 +1,113 @@
+{
+  "name": "first",
+  "nodes": [
+    {
+      "name": "Wait 4",
+      "type": "core.wait",
+      "params": {
+        "seconds": 2,
+        "unit": "seconds"
+      },
+      "_x": 277.25390625,
+      "_y": 146.3359375
+    },
+    {
+      "name": "Tabel 8",
+      "type": "data.tabel",
+      "params": {
+        "tabel": "okay....",
+        "operation": "read",
+        "filter_field": "",
+        "filter_value": ""
+      },
+      "_x": 398.984375,
+      "_y": 153.796875
+    },
+    {
+      "name": "AI 4",
+      "type": "ai.agent",
+      "params": {
+        "api_key": "",
+        "model": "deepseek-reasoner",
+        "system_prompt": "",
+        "user_prompt": "",
+        "output_shape": "",
+        "max_tokens": 10024,
+        "credential": "sk-d7de5a30dfc7443c8cda91ce038b0edf",
+        "input": "{{ $('Webhook 13').item.json.body.message }}"
+      },
+      "_x": 427.25390625,
+      "_y": 317.0390625
+    },
+    {
+      "name": "ok",
+      "type": "webhook.respond",
+      "params": {
+        "status": 200,
+        "body_mode": "pass through item",
+        "custom_body": "{{ $('AI 4').item.json.reply }}",
+        "is_test_run": false
+      },
+      "_x": 576.3013120175708,
+      "_y": 277.8828515148576
+    },
+    {
+      "name": "Webhook 13",
+      "type": "webhook.trigger",
+      "params": {
+        "path": "/webhook",
+        "method": "POST",
+        "sample": {
+          "body": {
+            "example": true
+          },
+          "headers": {},
+          "method": "POST",
+          "path": "/webhook",
+          "query": {}
+        }
+      },
+      "_x": 223.33984375,
+      "_y": 329.33203125
+    },
+    {
+      "name": "HTTP Request 16",
+      "type": "web.http",
+      "params": {
+        "url": "https://",
+        "method": "GET",
+        "headers": {},
+        "body": null,
+        "timeout": 15,
+        "response_mode": "replace item",
+        "response_field": "response"
+      },
+      "_x": 109.1875,
+      "_y": 411.86328125
+    }
+  ],
+  "connections": {
+    "Wait 4": [
+      {
+        "to": "Tabel 8",
+        "out": 0,
+        "in": 0
+      }
+    ],
+    "AI 4": [
+      {
+        "to": "ok",
+        "out": 0,
+        "in": 0
+      }
+    ],
+    "Webhook 13": [
+      {
+        "to": "AI 4",
+        "out": 0,
+        "in": 0
+      }
+    ]
+  },
+  "kind": "normal"
+}

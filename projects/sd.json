@@ -1,0 +1,21 @@
+{
+  "name": "sd",
+  "nodes": [
+    {
+      "name": "Respond to Webhook 2",
+      "type": "webhook.respond",
+      "params": {
+        "status": 200,
+        "body_mode": "pass through item",
+        "custom_body": {
+          "ok": true
+        },
+        "is_test_run": false
+      },
+      "_x": 254.5390625,
+      "_y": 124.8671875
+    }
+  ],
+  "connections": {},
+  "kind": "normal"
+}
