@@ -1,0 +1,887 @@
+"""
+home_screen.py — the landing screen: Projects | Tabels tabs, each backed by an
+icon-grid file browser with right-click Open/Download/Duplicate/Rename/Delete.
+
+This screen has its own small, self-contained theme (grey background, white
+accents by default) that the user can customize from the gear icon in the
+bottom-left corner: button/accent color, logo color, and an optional
+background image. Settings are stored in home_ui_settings.json next to this
+file and survive restarts.
+"""
+import os
+import json
+import shutil
+import weakref
+
+from PyQt6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QListWidget,
+    QListWidgetItem, QStackedWidget, QInputDialog, QMenu, QMessageBox, QLineEdit,
+    QDialog, QColorDialog, QFileDialog
+)
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QIcon, QPixmap, QAction
+
+from storage import (
+    PROJECTS_DIR, TABELS_DIR, DOWNLOADS, _ensure, _path,
+    list_projects, list_tabels, save_project, new_tabel,
+    list_credentials, load_credential, save_credential, delete_credential,
+    project_kind,
+)
+
+
+SERVO_RED = "#ff6b6b"
+NORMAL_ICON_BLUE = "#7ecfff"   # fixed color for normal (non-servo) file icons —
+                               # independent of the customizable button/accent color
+
+# --- Home screen theme (independent of the app-wide theme.py accent) -------
+GREY_BG = "#3a3a3a"        # flat background when no image is set
+GREY_PANEL = "#333333"     # slightly darker, used for dialogs
+DEFAULT_BUTTON_COLOR = "#ffffff"
+DEFAULT_LOGO_COLOR = NORMAL_ICON_BLUE   # logo defaults to the same blue as normal icons
+
+HOME_UI_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "home_ui_settings.json")
+DEFAULT_HOME_UI_SETTINGS = {
+    "button_color": DEFAULT_BUTTON_COLOR,
+    "logo_color": DEFAULT_LOGO_COLOR,
+    "bg_image": None,        # absolute path to an image, or None for flat grey
+    "bg_transparent": False, # True = no background painted at all (see-through)
+    # --- workflow/canvas (editor.py + canvas.py) ---
+    "canvas_dots": True,          # n8n-style dot grid on the canvas
+    "canvas_bg_image": None,      # absolute path to a canvas background image
+    "canvas_no_background": False,  # True = canvas paints nothing (old look)
+}
+
+
+def load_home_ui_settings():
+    data = {}
+    try:
+        with open(HOME_UI_SETTINGS_PATH, "r") as f:
+            data = json.load(f)
+    except Exception:
+        pass
+    settings = dict(DEFAULT_HOME_UI_SETTINGS)
+    if isinstance(data, dict):
+        settings.update({k: v for k, v in data.items() if k in DEFAULT_HOME_UI_SETTINGS})
+    return settings
+
+
+def save_home_ui_settings(settings):
+    try:
+        with open(HOME_UI_SETTINGS_PATH, "w") as f:
+            json.dump(settings, f, indent=2)
+    except Exception:
+        pass
+
+
+# --- Live theme broadcast ---------------------------------------------------
+# Any screen that wants to follow the shared skin (Home, TabelEditor, ...)
+# registers itself here. When the settings popup saves, every registered
+# screen gets its settings reloaded from disk and apply_theme() re-run —
+# so changing the color/background in one place updates ALL open screens
+# immediately, not just the one that happened to open the popup.
+_themed_screens = []
+
+
+def register_themed_screen(widget):
+    """Call once from a screen's __init__ (after its own apply_theme()) to
+    have it follow live settings updates from the settings popup."""
+    _themed_screens.append(weakref.ref(widget))
+
+
+def broadcast_theme_update():
+    """Reload settings from disk and re-apply the theme on every registered,
+    still-alive screen. Called after the settings popup saves."""
+    alive = []
+    fresh = load_home_ui_settings()
+    for ref in _themed_screens:
+        widget = ref()
+        if widget is None:
+            continue
+        try:
+            widget.settings = fresh
+            widget.apply_theme()
+        except Exception:
+            pass
+        alive.append(ref)
+    _themed_screens[:] = alive
+
+
+def file_icon(size=64, color=None):
+    color = color or DEFAULT_BUTTON_COLOR
+    pm = QPixmap(size, size); pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    w, h = size * 0.62, size * 0.8
+    x, y = (size - w) / 2, (size - h) / 2
+    fold = size * 0.22
+    path = QPainterPath()
+    path.moveTo(x, y)
+    path.lineTo(x + w - fold, y)
+    path.lineTo(x + w, y + fold)
+    path.lineTo(x + w, y + h)
+    path.lineTo(x, y + h)
+    path.closeSubpath()
+    fill = QColor(34, 20, 20, 200) if color == SERVO_RED else QColor(40, 40, 40, 200)
+    p.setPen(QPen(QColor(color), 2)); p.setBrush(QBrush(fill))
+    p.drawPath(path)
+    p.setPen(QPen(QColor(color), 1.5))
+    p.drawLine(int(x + w - fold), int(y), int(x + w - fold), int(y + fold))
+    p.drawLine(int(x + w - fold), int(y + fold), int(x + w), int(y + fold))
+    p.end()
+    return QIcon(pm)
+
+
+class IconBrowser(QWidget):
+    """File-manager style grid of icons with right-click menu. Used for both
+       Projects and Tabels."""
+    def __init__(self, kind, app, accent=None):
+        super().__init__()
+        self.kind = kind            # "project" or "tabel"
+        self.app = app
+        self.accent = accent or DEFAULT_BUTTON_COLOR
+        # Normal-node icons always stay blue and servo icons always stay red —
+        # both are fixed/independent of the customizable button/accent color.
+        self._icon = file_icon(64, NORMAL_ICON_BLUE)
+        self._icon_servo = file_icon(64, SERVO_RED)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0)
+        self.grid_host = QListWidget()
+        self.grid_host.setViewMode(QListWidget.ViewMode.IconMode)
+        self.grid_host.setIconSize(QSize(64, 64))
+        self.grid_host.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.grid_host.setSpacing(18)
+        self.grid_host.setMovement(QListWidget.Movement.Static)
+        self.grid_host.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.grid_host.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.grid_host.customContextMenuRequested.connect(self.menu)
+        self.grid_host.itemDoubleClicked.connect(lambda it: self.open(it.text()))
+        self.grid_host.setStyleSheet(self._list_style())
+        lay.addWidget(self.grid_host)
+
+    def _list_style(self):
+        return (
+            "QListWidget{background:transparent;border:none;}"
+            "QListWidget::item{color:#ddd;}"
+            f"QListWidget::item:selected{{color:{self.accent};background:rgba(255,255,255,0.10);border-radius:4px;}}"
+        )
+
+    def set_accent(self, color):
+        # Only the selection highlight follows the accent color — the file
+        # icons themselves are fixed (blue for normal, red for servo).
+        self.accent = color
+        self.grid_host.setStyleSheet(self._list_style())
+        self.refresh()
+
+    def names(self):
+        return list_projects() if self.kind == "project" else list_tabels()
+
+    def refresh(self):
+        self.grid_host.clear()
+        for n in self.names():
+            # servo projects get a RED file icon so they stand out from the
+            # normal (accent-colored) workflow projects at a glance.
+            is_servo = (self.kind == "project" and project_kind(n) == "servo")
+            icon = self._icon_servo if is_servo else self._icon
+            it = QListWidgetItem(icon, n)
+            it.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+            it.setSizeHint(QSize(96, 96))
+            if is_servo:
+                it.setForeground(QColor(SERVO_RED))
+            self.grid_host.addItem(it)
+
+    def menu(self, pos):
+        it = self.grid_host.itemAt(pos)
+        if not it: return
+        # right-clicking an item outside the current selection replaces it;
+        # right-clicking one that's already part of a multi-selection keeps
+        # the whole selection so the menu acts on all of it.
+        if it not in self.grid_host.selectedItems():
+            self.grid_host.clearSelection()
+            it.setSelected(True)
+        names = [i.text() for i in self.grid_host.selectedItems()]
+        if not names:
+            return
+        multi = len(names) > 1
+        m = QMenu(self)
+        for label in ("Open", "Download", "Duplicate", "Rename", "Delete"):
+            if multi and label in ("Open", "Rename"):
+                continue   # only make sense for a single item
+            text = f"{label} ({len(names)})" if multi else label
+            act = QAction(text, self)
+            act.triggered.connect(lambda _=False, l=label, ns=list(names): self.action(l, ns))
+            m.addAction(act)
+        m.exec(self.grid_host.mapToGlobal(pos))
+
+    def action(self, label, names):
+        """Runs one action on one or more selected items at once
+        (download/duplicate/delete all support a batch; open/rename only
+        make sense for a single item)."""
+        d = PROJECTS_DIR if self.kind == "project" else TABELS_DIR
+        if label == "Open":
+            if names: self.open(names[0])
+        elif label == "Download":
+            _ensure(DOWNLOADS)
+            ok = 0
+            for name in names:
+                try:
+                    shutil.copy(_path(d, name), os.path.join(DOWNLOADS, f"{name}.json"))
+                    ok += 1
+                except Exception:
+                    pass
+            word = "file" if ok == 1 else "files"
+            self.app.toast(f"downloaded {ok} {word} to ~/Downloads")
+        elif label == "Duplicate":
+            existing = set(self.names())
+            for name in names:
+                base = f"{name}_copy"; i = 1; cand = base
+                while cand in existing: i += 1; cand = f"{base}{i}"
+                try:
+                    shutil.copy(_path(d, name), _path(d, cand))
+                    existing.add(cand)
+                except Exception:
+                    pass
+            self.refresh()
+        elif label == "Rename":
+            if not names: return
+            name = names[0]
+            new, ok = QInputDialog.getText(self, "Rename", "New name:", text=name)
+            if ok and new.strip() and new.strip() != name:
+                os.rename(_path(d, name), _path(d, new.strip())); self.refresh()
+        elif label == "Delete":
+            if len(names) == 1:
+                question = f"Delete '{names[0]}'?"
+            else:
+                question = f"Delete {len(names)} selected items?\n\n" + "\n".join(names)
+            if QMessageBox.question(self, "Delete", question) == QMessageBox.StandardButton.Yes:
+                for name in names:
+                    try:
+                        os.remove(_path(d, name))
+                    except Exception:
+                        pass
+                self.refresh()
+
+    def open(self, name):
+        if self.kind == "project": self.app.open_project(name)
+        else: self.app.open_tabel(name)
+
+
+class CredentialsPanel(QWidget):
+    """Manage named credentials (e.g. a DeepSeek token). Each credential is a
+    small JSON file {name, token}. AI nodes can pick one by name instead of
+    pasting the token every time."""
+    def __init__(self, app, accent=None):
+        super().__init__()
+        self.app = app
+        self.accent = accent or DEFAULT_BUTTON_COLOR
+        self.current = None
+        root = QHBoxLayout(self); root.setContentsMargins(0, 8, 0, 0); root.setSpacing(16)
+
+        # left: list of saved credentials + new/delete
+        leftw = QVBoxLayout(); leftw.setSpacing(6)
+        leftw.addWidget(self._tag("SAVED CREDENTIALS"))
+        self.list = QListWidget(); self.list.setFixedWidth(260)
+        self.list.itemClicked.connect(self._on_pick)
+        leftw.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        new_btn = QPushButton("+ New"); new_btn.clicked.connect(self._new)
+        del_btn = QPushButton("Delete"); del_btn.clicked.connect(self._delete)
+        row.addWidget(new_btn); row.addWidget(del_btn)
+        leftw.addLayout(row)
+        root.addLayout(leftw)
+
+        # right: editor for the selected credential
+        rightw = QVBoxLayout(); rightw.setSpacing(6)
+        rightw.addWidget(self._tag("CREDENTIAL"))
+        self.name_lbl = QLabel("(select or create a credential)")
+        self.name_lbl.setStyleSheet(f"color:{self.accent};font-family:monospace;font-size:15px;")
+        rightw.addWidget(self.name_lbl)
+        rightw.addWidget(self._sublabel("DeepSeek API Token"))
+        self.token_edit = QLineEdit()
+        self.token_edit.setPlaceholderText("paste your DeepSeek token here")
+        self.token_edit.setStyleSheet("font-family:monospace;font-size:13px;padding:6px;")
+        rightw.addWidget(self.token_edit)
+        save_btn = QPushButton("Save Credential"); save_btn.clicked.connect(self._save)
+        rightw.addWidget(save_btn)
+        self.status = QLabel(""); self.status.setStyleSheet("color:#7CFC9B;font-family:monospace;font-size:11px;")
+        rightw.addWidget(self.status)
+        rightw.addStretch()
+        root.addLayout(rightw, 1)
+
+    def set_accent(self, color):
+        self.accent = color
+        self.name_lbl.setStyleSheet(f"color:{color};font-family:monospace;font-size:15px;")
+
+    def _tag(self, t):
+        l = QLabel(t); l.setStyleSheet("color:#999;font-family:monospace;font-size:11px;letter-spacing:1px;")
+        return l
+
+    def _sublabel(self, t):
+        l = QLabel(t); l.setStyleSheet("color:#bbb;font-family:monospace;font-size:12px;")
+        return l
+
+    def refresh(self):
+        self.list.clear()
+        for name in list_credentials():
+            self.list.addItem(QListWidgetItem(name))
+
+    def _on_pick(self, item):
+        name = item.text()
+        self.current = name
+        try:
+            data = load_credential(name)
+        except Exception:
+            data = {}
+        self.name_lbl.setText(name)
+        self.token_edit.setText(data.get("token", ""))
+        self.status.setText("")
+
+    def _new(self):
+        name, ok = QInputDialog.getText(self, "New Credential", "Name (e.g. 'deepseek'):")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        save_credential(name, {"name": name, "token": ""})
+        self.refresh(); self.current = name
+        self.name_lbl.setText(name); self.token_edit.setText(""); self.status.setText("created")
+
+    def _save(self):
+        if not self.current:
+            self.status.setStyleSheet("color:#ff6b6b;font-family:monospace;font-size:11px;")
+            self.status.setText("create or select a credential first"); return
+        save_credential(self.current, {"name": self.current, "token": self.token_edit.text().strip()})
+        self.status.setStyleSheet("color:#7CFC9B;font-family:monospace;font-size:11px;")
+        self.status.setText(f"saved: {self.current}")
+
+    def _delete(self):
+        if not self.current:
+            return
+        confirm = QMessageBox.question(self, "Delete", f"Delete credential '{self.current}'?")
+        if confirm == QMessageBox.StandardButton.Yes:
+            delete_credential(self.current)
+            self.current = None; self.name_lbl.setText("(select or create a credential)")
+            self.token_edit.clear(); self.status.setText(""); self.refresh()
+
+
+class ToggleSwitch(QPushButton):
+    """A small ON/OFF pill switch (checkable button styled as a toggle)."""
+    def __init__(self, checked=False, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(54, 26)
+        self.toggled.connect(self._restyle)
+        self.setChecked(checked)
+        self._restyle(checked)
+
+    def _restyle(self, checked):
+        self.setText("ON" if checked else "OFF")
+        if checked:
+            self.setStyleSheet(
+                f"QPushButton{{background:{NORMAL_ICON_BLUE};color:#111;"
+                f"border:1px solid {NORMAL_ICON_BLUE};border-radius:13px;"
+                "font-family:monospace;font-size:11px;font-weight:bold;}"
+            )
+        else:
+            self.setStyleSheet(
+                "QPushButton{background:#555;color:#ddd;border:1px solid #777;"
+                "border-radius:13px;font-family:monospace;font-size:11px;}"
+            )
+
+
+class HomeSettingsDialog(QDialog):
+    """Popup from the bottom-left gear icon (Home or Tabel Editor).
+
+    Page 1 — Home Screen Settings: button/accent color, logo color,
+    background image or see-through switch.
+
+    Page 2 — Workflow UI Settings (reached via the arrow, top-right):
+    canvas look for the workflow editor — n8n-style dot grid by default,
+    a custom canvas background image, a switch to hide the dots, and a
+    switch to remove the canvas background entirely (the old plain look).
+
+    Saving persists everything at once and broadcasts it live to every
+    registered screen (Home, TabelEditor, the workflow Editor/Canvas, ...).
+    """
+    def __init__(self, home, parent=None):
+        super().__init__(parent)
+        self.home = home
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(400)
+        self.setStyleSheet(
+            f"QDialog{{background:{GREY_PANEL};}}"
+            "QLabel{color:#ddd;font-family:monospace;font-size:13px;}"
+            "QPushButton{background:transparent;color:#eee;border:1px solid #777;"
+            "border-radius:4px;padding:6px 10px;font-family:monospace;font-size:12px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.10);}"
+        )
+        s = home.settings
+        self._button_color = s.get("button_color", DEFAULT_BUTTON_COLOR)
+        self._logo_color = s.get("logo_color", DEFAULT_LOGO_COLOR)
+        self._bg_image = s.get("bg_image")
+        self._bg_transparent = s.get("bg_transparent", False)
+        self._canvas_bg_image = s.get("canvas_bg_image")
+        self._canvas_dots = s.get("canvas_dots", True)
+        self._canvas_no_background = s.get("canvas_no_background", False)
+
+        outer = QVBoxLayout(self); outer.setSpacing(14)
+
+        # -- header: title + nav arrow (top-right) --------------------------
+        header = QHBoxLayout()
+        self.page_title = QLabel("Home Screen Settings")
+        self.page_title.setStyleSheet("color:#fff;font-family:monospace;font-size:14px;font-weight:bold;")
+        header.addWidget(self.page_title)
+        header.addStretch()
+        self.nav_btn = QPushButton("\u2192")
+        self.nav_btn.setFixedSize(32, 28)
+        self.nav_btn.setToolTip("Workflow UI settings")
+        self.nav_btn.clicked.connect(self._toggle_page)
+        header.addWidget(self.nav_btn)
+        outer.addLayout(header)
+
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack)
+        self.stack.addWidget(self._build_home_page())
+        self.stack.addWidget(self._build_workflow_page())
+
+        row_btns = QHBoxLayout(); row_btns.addStretch()
+        cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
+        save = QPushButton("Save"); save.clicked.connect(self._save)
+        row_btns.addWidget(cancel); row_btns.addWidget(save)
+        outer.addLayout(row_btns)
+
+    def _toggle_page(self):
+        if self.stack.currentIndex() == 0:
+            self.stack.setCurrentIndex(1)
+            self.nav_btn.setText("\u2190")
+            self.nav_btn.setToolTip("Home screen settings")
+            self.page_title.setText("Workflow UI Settings")
+        else:
+            self.stack.setCurrentIndex(0)
+            self.nav_btn.setText("\u2192")
+            self.nav_btn.setToolTip("Workflow UI settings")
+            self.page_title.setText("Home Screen Settings")
+
+    # -- page 1: home screen ------------------------------------------------
+    def _build_home_page(self):
+        page = QWidget()
+        lay = QVBoxLayout(page); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+
+        lay.addWidget(self._tag("BUTTON / ACCENT COLOR"))
+        row1 = QHBoxLayout()
+        self.btn_swatch = QPushButton(); self.btn_swatch.setFixedSize(28, 28)
+        self.btn_swatch.setEnabled(False)
+        self._paint_swatch(self.btn_swatch, self._button_color)
+        pick1 = QPushButton("Choose\u2026"); pick1.clicked.connect(self._pick_button_color)
+        row1.addWidget(self.btn_swatch); row1.addWidget(pick1); row1.addStretch()
+        lay.addLayout(row1)
+
+        lay.addWidget(self._tag("LOGO COLOR (\"DuGS\", shared across screens)"))
+        row2 = QHBoxLayout()
+        self.logo_swatch = QPushButton(); self.logo_swatch.setFixedSize(28, 28)
+        self.logo_swatch.setEnabled(False)
+        self._paint_swatch(self.logo_swatch, self._logo_color)
+        pick2 = QPushButton("Choose\u2026"); pick2.clicked.connect(self._pick_logo_color)
+        row2.addWidget(self.logo_swatch); row2.addWidget(pick2); row2.addStretch()
+        lay.addLayout(row2)
+
+        lay.addWidget(self._tag("BACKGROUND IMAGE"))
+        row3 = QHBoxLayout()
+        choose_bg = QPushButton("Choose Image\u2026"); choose_bg.clicked.connect(self._pick_bg_image)
+        remove_bg = QPushButton("Remove Image"); remove_bg.clicked.connect(self._remove_bg_image)
+        row3.addWidget(choose_bg); row3.addWidget(remove_bg)
+        row3.addSpacing(20)
+        see_through_lbl = QLabel("See-through:")
+        self.transparent_switch = ToggleSwitch(checked=self._bg_transparent)
+        self.transparent_switch.toggled.connect(self._on_transparent_toggle)
+        row3.addWidget(see_through_lbl)
+        row3.addWidget(self.transparent_switch)
+        row3.addStretch()
+        lay.addLayout(row3)
+        self.bg_status = QLabel(self._bg_status_text())
+        self.bg_status.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
+        lay.addWidget(self.bg_status)
+        lay.addStretch()
+        return page
+
+    # -- page 2: workflow editor / canvas ------------------------------------
+    def _build_workflow_page(self):
+        page = QWidget()
+        lay = QVBoxLayout(page); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+
+        lay.addWidget(self._tag("CANVAS BACKGROUND (n8n-style by default)"))
+        row1 = QHBoxLayout()
+        choose_cbg = QPushButton("Choose Image\u2026"); choose_cbg.clicked.connect(self._pick_canvas_bg_image)
+        remove_cbg = QPushButton("Remove Image"); remove_cbg.clicked.connect(self._remove_canvas_bg_image)
+        row1.addWidget(choose_cbg); row1.addWidget(remove_cbg); row1.addStretch()
+        lay.addLayout(row1)
+        self.canvas_bg_status = QLabel(self._canvas_bg_status_text())
+        self.canvas_bg_status.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
+        lay.addWidget(self.canvas_bg_status)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Grid dots:"))
+        self.dots_switch = ToggleSwitch(checked=self._canvas_dots)
+        self.dots_switch.toggled.connect(self._on_dots_toggle)
+        row2.addWidget(self.dots_switch)
+        row2.addStretch()
+        lay.addLayout(row2)
+        self.dots_hint = QLabel("Small dot grid over the canvas, like n8n.")
+        self.dots_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
+        lay.addWidget(self.dots_hint)
+
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("No background:"))
+        self.canvas_no_bg_switch = ToggleSwitch(checked=self._canvas_no_background)
+        self.canvas_no_bg_switch.toggled.connect(self._on_canvas_no_bg_toggle)
+        row3.addWidget(self.canvas_no_bg_switch)
+        row3.addStretch()
+        lay.addLayout(row3)
+        self.canvas_no_bg_hint = QLabel("Removes the grey/image/dots entirely — the plain look it had before.")
+        self.canvas_no_bg_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
+        lay.addWidget(self.canvas_no_bg_hint)
+
+        lay.addStretch()
+        return page
+
+    # -- shared helpers -------------------------------------------------------
+    def _tag(self, t):
+        l = QLabel(t); l.setStyleSheet("color:#999;font-family:monospace;font-size:11px;letter-spacing:1px;")
+        return l
+
+    def _paint_swatch(self, btn, color):
+        btn.setStyleSheet(f"background:{color};border:1px solid #777;border-radius:4px;")
+
+    # -- home page handlers ---------------------------------------------------
+    def _bg_status_text(self):
+        if getattr(self, "_bg_transparent", False):
+            return "Current: see-through (no background)"
+        if self._bg_image:
+            return f"Current: {os.path.basename(self._bg_image)}"
+        return "Current: none (flat grey background)"
+
+    def _on_transparent_toggle(self, checked):
+        self._bg_transparent = checked
+        self.bg_status.setText(self._bg_status_text())
+
+    def _pick_button_color(self):
+        c = QColorDialog.getColor(QColor(self._button_color), self, "Pick Button Color")
+        if c.isValid():
+            self._button_color = c.name()
+            self._paint_swatch(self.btn_swatch, self._button_color)
+
+    def _pick_logo_color(self):
+        c = QColorDialog.getColor(QColor(self._logo_color), self, "Pick Logo Color")
+        if c.isValid():
+            self._logo_color = c.name()
+            self._paint_swatch(self.logo_swatch, self._logo_color)
+
+    def _pick_bg_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose Background Image", "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
+        )
+        if path:
+            self._bg_image = path
+            self.bg_status.setText(self._bg_status_text())
+
+    def _remove_bg_image(self):
+        self._bg_image = None
+        self.bg_status.setText(self._bg_status_text())
+
+    # -- workflow page handlers ------------------------------------------------
+    def _canvas_bg_status_text(self):
+        if self._canvas_no_background:
+            return "Current: no background (plain, dots hidden too)"
+        if self._canvas_bg_image:
+            return f"Current: {os.path.basename(self._canvas_bg_image)}"
+        return "Current: flat grey (n8n default)"
+
+    def _pick_canvas_bg_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose Canvas Background Image", "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
+        )
+        if path:
+            self._canvas_bg_image = path
+            self.canvas_bg_status.setText(self._canvas_bg_status_text())
+
+    def _remove_canvas_bg_image(self):
+        self._canvas_bg_image = None
+        self.canvas_bg_status.setText(self._canvas_bg_status_text())
+
+    def _on_dots_toggle(self, checked):
+        self._canvas_dots = checked
+
+    def _on_canvas_no_bg_toggle(self, checked):
+        self._canvas_no_background = checked
+        self.canvas_bg_status.setText(self._canvas_bg_status_text())
+
+    def _save(self):
+        s = self.home.settings
+        s["button_color"] = self._button_color
+        s["logo_color"] = self._logo_color
+        s["bg_image"] = self._bg_image
+        s["bg_transparent"] = self._bg_transparent
+        s["canvas_bg_image"] = self._canvas_bg_image
+        s["canvas_dots"] = self._canvas_dots
+        s["canvas_no_background"] = self._canvas_no_background
+        save_home_ui_settings(s)
+        broadcast_theme_update()
+        self.accept()
+
+
+def button_style(color, circular=False):
+    """Shared button styling helper — used by Home and any other screen that
+    wants to match the same customizable button/accent look (e.g. TabelEditor)."""
+    radius = "19px" if circular else "4px"
+    pad = "0px" if circular else "8px 14px"
+    size = "font-size:18px;" if circular else "font-size:14px;"
+    return (
+        f"QPushButton{{background:transparent;color:{color};border:1px solid {color};"
+        f"border-radius:{radius};padding:{pad};font-family:monospace;{size}}}"
+        f"QPushButton:hover{{background:rgba(255,255,255,0.12);}}"
+    )
+
+
+def paint_flat_or_image_bg(widget, event, settings, base_grey=GREY_BG):
+    """Shared background painter — draws the settings' bg image (scaled to
+    cover, with a readability overlay), a flat grey fill, or nothing at all
+    if bg_transparent is on. Used by both Home and TabelEditor so the
+    background customization behaves identically everywhere."""
+    if settings.get("bg_transparent"):
+        return False  # caller should just call super().paintEvent(event)
+    painter = QPainter(widget)
+    bg_path = settings.get("bg_image")
+    pix = QPixmap(bg_path) if bg_path and os.path.exists(bg_path) else None
+    if pix and not pix.isNull():
+        scaled = pix.scaled(
+            widget.size(),
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x = (widget.width() - scaled.width()) // 2
+        y = (widget.height() - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+        painter.fillRect(widget.rect(), QColor(0, 0, 0, 90))
+    else:
+        painter.fillRect(widget.rect(), QColor(base_grey))
+    painter.end()
+    return True
+
+
+class Home(QWidget):
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.settings = load_home_ui_settings()
+
+        root = QVBoxLayout(self); root.setContentsMargins(24, 18, 24, 18); root.setSpacing(14)
+
+        topbar = QHBoxLayout()
+        self.dugs = QLabel("DuGS")
+        self.dugs.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dugs.mousePressEvent = lambda _e: self.app.go_home()
+        topbar.addWidget(self.dugs); topbar.addStretch()
+        self.new_btn = QPushButton("+ New")
+        self.new_btn.clicked.connect(self.new_item)
+        topbar.addWidget(self.new_btn)
+        root.addLayout(topbar)
+
+        tabs = QHBoxLayout(); tabs.addStretch()
+        self.tab_projects = QPushButton("Projects")
+        self.tab_tabels = QPushButton("Tabels")
+        self.tab_creds = QPushButton("Credentials")
+        for t in (self.tab_projects, self.tab_tabels, self.tab_creds):
+            t.setFixedWidth(200)
+        self.tab_projects.clicked.connect(lambda: self.select("project"))
+        self.tab_tabels.clicked.connect(lambda: self.select("tabel"))
+        self.tab_creds.clicked.connect(lambda: self.select("credential"))
+        tabs.addWidget(self.tab_projects); tabs.addSpacing(12)
+        tabs.addWidget(self.tab_tabels); tabs.addSpacing(12)
+        tabs.addWidget(self.tab_creds)
+        tabs.addStretch()
+        root.addLayout(tabs)
+
+        btn_color = self.settings.get("button_color", DEFAULT_BUTTON_COLOR)
+        self.browsers = QStackedWidget()
+        self.proj_browser = IconBrowser("project", app, accent=btn_color)
+        self.tabel_browser = IconBrowser("tabel", app, accent=btn_color)
+        self.creds_panel = CredentialsPanel(app, accent=btn_color)
+        self.browsers.addWidget(self.proj_browser)
+        self.browsers.addWidget(self.tabel_browser)
+        self.browsers.addWidget(self.creds_panel)
+        root.addWidget(self.browsers, 1)
+
+        # settings gear, pinned bottom-left
+        bottom_bar = QHBoxLayout()
+        self.settings_btn = QPushButton("\u2699")   # gear glyph
+        self.settings_btn.setFixedSize(38, 38)
+        self.settings_btn.setToolTip("Home screen settings")
+        self.settings_btn.clicked.connect(self.open_settings)
+        bottom_bar.addWidget(self.settings_btn)
+        bottom_bar.addStretch()
+        root.addLayout(bottom_bar)
+
+        self.section = "project"
+        self.apply_theme()
+        self.select("project")
+        register_themed_screen(self)
+
+    # -- theme -------------------------------------------------------------
+    def _btn_style(self, color, circular=False):
+        return button_style(color, circular)
+
+    def _tab_style(self, active, color):
+        if active:
+            return (
+                f"QPushButton{{background:rgba(255,255,255,0.16);color:{color};"
+                f"border:1px solid {color};border-radius:4px;padding:10px;text-align:left;"
+                f"font-family:monospace;font-size:14px;}}"
+            )
+        return (
+            "QPushButton{background:transparent;color:#bbb;"
+            "border:1px solid #666;border-radius:4px;padding:10px;text-align:left;"
+            "font-family:monospace;font-size:14px;}"
+            f"QPushButton:hover{{color:{color};border-color:{color};}}"
+        )
+
+    def apply_theme(self):
+        """(Re)apply button/logo colors + background from self.settings.
+        Called at startup and again after the settings dialog is saved."""
+        btn_color = self.settings.get("button_color", DEFAULT_BUTTON_COLOR)
+        logo_color = self.settings.get("logo_color", DEFAULT_LOGO_COLOR)
+
+        self.dugs.setStyleSheet(
+            f"color:{logo_color};font-family:monospace;font-size:24px;font-weight:bold;"
+        )
+        self.new_btn.setStyleSheet(self._btn_style(btn_color))
+        self.settings_btn.setStyleSheet(self._btn_style(btn_color, circular=True))
+
+        for t, sec in (
+            (self.tab_projects, "project"),
+            (self.tab_tabels, "tabel"),
+            (self.tab_creds, "credential"),
+        ):
+            t.setStyleSheet(self._tab_style(sec == self.section, btn_color))
+
+        self.proj_browser.set_accent(btn_color)
+        self.tabel_browser.set_accent(btn_color)
+        self.creds_panel.set_accent(btn_color)
+
+        self.update()  # repaint background (grey or image)
+
+    def open_settings(self):
+        dlg = HomeSettingsDialog(self, self)
+        dlg.exec()
+
+    def paintEvent(self, event):
+        """Draws the home screen background: the user's chosen image (scaled
+        to cover, centered), a flat grey fill, or nothing at all if the
+        see-through switch is on (lets whatever's behind this widget show
+        through instead)."""
+        if not paint_flat_or_image_bg(self, event, self.settings):
+            super().paintEvent(event)
+            return
+        super().paintEvent(event)
+
+    # -- sections ------------------------------------------------------------
+    def select(self, section):
+        self.section = section
+        btn_color = self.settings.get("button_color", DEFAULT_BUTTON_COLOR)
+        self.tab_projects.setStyleSheet(self._tab_style(section == "project", btn_color))
+        self.tab_tabels.setStyleSheet(self._tab_style(section == "tabel", btn_color))
+        self.tab_creds.setStyleSheet(self._tab_style(section == "credential", btn_color))
+        if section == "project":
+            self.browsers.setCurrentWidget(self.proj_browser); self.proj_browser.refresh()
+            self.new_btn.setText("+ New Project"); self.new_btn.setVisible(True)
+        elif section == "tabel":
+            self.browsers.setCurrentWidget(self.tabel_browser); self.tabel_browser.refresh()
+            self.new_btn.setText("+ New Tabel"); self.new_btn.setVisible(True)
+        else:
+            self.browsers.setCurrentWidget(self.creds_panel); self.creds_panel.refresh()
+            self.new_btn.setVisible(False)
+
+    def refresh(self):
+        self.select(self.section)
+
+    def new_item(self):
+        if self.section == "project":
+            dlg = NewProjectDialog(self, accent=self.settings.get("button_color", DEFAULT_BUTTON_COLOR))
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                name = dlg.name(); kind = dlg.kind()
+                if name:
+                    save_project(name, {"name": name, "kind": kind,
+                                        "nodes": [], "connections": {}})
+                    self.app.open_project(name)
+        else:
+            name, ok = QInputDialog.getText(self, "New Tabel", "Tabel name:")
+            if ok and name.strip():
+                name = name.strip(); new_tabel(name); self.app.open_tabel(name)
+
+
+class NewProjectDialog(QDialog):
+    """New Project popup: name + project type.
+
+    normal -> a regular workflow (saves JSON, runs in the engine)
+    servo  -> a hardware workflow; instead of running, it GENERATES Arduino
+              code (.ino) that you upload to the board.
+    """
+    def __init__(self, parent=None, accent=None):
+        super().__init__(parent)
+        self.accent = accent or DEFAULT_BUTTON_COLOR
+        self.setWindowTitle("New Project")
+        self.setMinimumWidth(420)
+        self.setStyleSheet(f"QDialog{{background:{GREY_PANEL};}}"
+                           "QLabel{color:#ccc;font-family:monospace;}"
+                           "QLineEdit{background:#262626;color:#fff;border:1px solid #666;"
+                           "border-radius:3px;padding:6px;font-family:monospace;font-size:13px;}")
+        lay = QVBoxLayout(self); lay.setSpacing(10)
+
+        lay.addWidget(QLabel("Project name:"))
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("my project")
+        lay.addWidget(self.name_edit)
+
+        lay.addWidget(QLabel("Project type:"))
+        self._kind = "normal"
+
+        self.btn_normal = QPushButton("Normal\nworkflow — runs in the engine, saves JSON")
+        self.btn_servo = QPushButton("Servo\nhardware — generates Arduino code (.ino)")
+        for b in (self.btn_normal, self.btn_servo):
+            b.setMinimumHeight(58)
+        self.btn_normal.clicked.connect(lambda: self._pick("normal"))
+        self.btn_servo.clicked.connect(lambda: self._pick("servo"))
+        lay.addWidget(self.btn_normal)
+        lay.addWidget(self.btn_servo)
+        self._restyle()
+
+        row = QHBoxLayout(); row.addStretch()
+        cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
+        create = QPushButton("Create"); create.clicked.connect(self._create)
+        row.addWidget(cancel); row.addWidget(create)
+        lay.addLayout(row)
+
+    def _pick(self, k):
+        self._kind = k
+        self._restyle()
+
+    def _restyle(self):
+        for b, k in ((self.btn_normal, "normal"), (self.btn_servo, "servo")):
+            if self._kind == k:
+                b.setStyleSheet(f"QPushButton{{background:rgba(255,255,255,0.16);color:{self.accent};"
+                                f"border:1px solid {self.accent};border-radius:4px;padding:8px;"
+                                f"text-align:left;font-family:monospace;font-size:12px;}}")
+            else:
+                b.setStyleSheet("QPushButton{background:transparent;color:#bbb;"
+                                "border:1px solid #666;border-radius:4px;padding:8px;"
+                                "text-align:left;font-family:monospace;font-size:12px;}"
+                                f"QPushButton:hover{{color:{self.accent};border-color:{self.accent};}}")
+
+    def _create(self):
+        if not self.name_edit.text().strip():
+            return
+        self.accept()
+
+    def name(self):
+        return self.name_edit.text().strip()
+
+    def kind(self):
+        return self._kind
