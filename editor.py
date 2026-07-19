@@ -20,6 +20,7 @@ from storage import list_projects, load_project, save_project, load_ui_state, sa
 from canvas import Canvas, node_pixmap
 from editor_widgets import (GripSplitter, DragJsonTree,
                             DropLineEdit, DropTextEdit)
+from panel_base import PanelBox, EdgeArrow, DotSplitter
 from editor_workers import SimWorker, RunWorker, EventListener
 from editor_settings import SettingsPanelMixin
 from node_popup import NodePopupMixin
@@ -33,6 +34,28 @@ from PyQt6.QtGui import QPainter, QColor as _QColor
 
 
 
+
+
+class _NullWidget:
+    """Stand-in for a module widget that is not on screen.
+
+    Panels start empty, so the editor may try to write to a run log or a code
+    view that the user has not added yet. Rather than guarding every call site
+    with a hasattr check, those attributes point here: every method quietly
+    does nothing, and any attribute lookup returns another no-op.
+    """
+    def __getattr__(self, _name):
+        return self._noop
+    def _noop(self, *a, **k):
+        return None
+
+
+class _NullList(_NullWidget):
+    """Same idea for list widgets, where a few calls expect a number back."""
+    def count(self):
+        return 0
+    def item(self, _i):
+        return None
 
 
 class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
@@ -59,75 +82,84 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self.logo = home
         lc.addWidget(home)
 
-        # a vertical splitter so Settings / Projects / Results can be resized
-        left_split = GripSplitter(Qt.Orientation.Vertical)
-        left_split.setChildrenCollapsible(True)
-        left_split.setHandleWidth(6)
+        # ---- PANELS -----------------------------------------------------
+        # Panels are containers down each edge. They start EMPTY and collapsed:
+        # you pull one open with its edge arrow, press [+], and tick which
+        # modules it should show. Modules themselves are plugins in panels/.
+        self._load_modules()
 
-        # ---- panels: the tools around the canvas are plugins now, loaded
-        # from panels/. Each declares which side it belongs on and its order,
-        # so adding a tool is just dropping a file in that folder.
-        self._load_panels()
-        for p in self._panels_on("left"):
-            left_split.addWidget(self._panel_box(p))
+        self.panel_left = PanelBox("left", self)
+        self.panel_right = PanelBox("right", self)
+        self.panel_bottom = PanelBox("bottom", self)
+        self.panels_by_side = {
+            "left": self.panel_left,
+            "right": self.panel_right,
+            "bottom": self.panel_bottom,
+        }
 
-        # initial vertical proportions: settings big, projects small, log medium
-        left_split.setStretchFactor(0, 5)
-        left_split.setStretchFactor(1, 2)
-        left_split.setStretchFactor(2, 3)
-        lc.addWidget(left_split, 1)
+        self.arrow_left = EdgeArrow("left", self.toggle_panel)
+        self.arrow_right = EdgeArrow("right", self.toggle_panel)
+        self.arrow_bottom = EdgeArrow("bottom", self.toggle_panel)
+        self.arrows_by_side = {
+            "left": self.arrow_left,
+            "right": self.arrow_right,
+            "bottom": self.arrow_bottom,
+        }
+
+        lc.addWidget(self.panel_left, 1)
 
         # ===================== CENTER COLUMN (canvas)
         center_col = QWidget()
         cc = QVBoxLayout(center_col); cc.setContentsMargins(6, 0, 6, 0); cc.setSpacing(6)
         bar = QHBoxLayout()
+        # the arrows that pull each side panel open sit in the toolbar
+        bar.addWidget(self.arrow_left)
         self.proj_label = QLabel("-"); self.proj_label.setStyleSheet(f"color:{ACCENT}; font-family:monospace; font-size:14px;")
         bar.addWidget(self.proj_label); bar.addStretch()
         self.run_btn = QPushButton("Run"); self.run_btn.clicked.connect(self.run)
-        run_btn = self.run_btn
-        self.sim_btn = QPushButton("▶ Simulate")
+        self.sim_btn = QPushButton("\u25b6 Simulate")
         self.sim_btn.clicked.connect(self.simulate)
         self.sim_btn.setVisible(False)      # servo projects only
         save_btn = QPushButton("Save"); save_btn.clicked.connect(self.save)
-        for b in (save_btn, self.sim_btn, run_btn): bar.addWidget(b)
+        for b in (save_btn, self.sim_btn, self.run_btn): bar.addWidget(b)
+        bar.addWidget(self.arrow_right)
         cc.addLayout(bar)
-        self.canvas = Canvas(self); cc.addWidget(self.canvas, 1)
 
-        # ===================== RIGHT COLUMN (palette + json)
+        self.canvas = Canvas(self)
+        cc.addWidget(self.canvas, 1)
+
+        # the bottom panel lives under the canvas, with its arrow beside it
+        bottom_bar = QHBoxLayout()
+        bottom_bar.setContentsMargins(0, 0, 0, 0)
+        bottom_bar.addWidget(self.arrow_bottom)
+        bottom_bar.addStretch()
+        cc.addLayout(bottom_bar)
+        cc.addWidget(self.panel_bottom)
+
+        # ===================== RIGHT COLUMN
         right_col = QWidget()
         rc = QVBoxLayout(right_col); rc.setContentsMargins(6, 0, 0, 0); rc.setSpacing(6)
-        right_split = GripSplitter(Qt.Orientation.Vertical)
-        right_split.setChildrenCollapsible(True)
-        right_split.setHandleWidth(6)
-
-        for p in self._panels_on("right"):
-            right_split.addWidget(self._panel_box(p))
-        for p in self._panels_on("bottom_right"):
-            right_split.addWidget(self._panel_box(p))
-        right_split.setStretchFactor(0, 3)
-        right_split.setStretchFactor(1, 2)
-        rc.addWidget(right_split, 1)
+        rc.addWidget(self.panel_right, 1)
 
         # ===================== MAIN HORIZONTAL SPLITTER (the 3 columns)
-        main_split = GripSplitter(Qt.Orientation.Horizontal)
+        main_split = DotSplitter(Qt.Orientation.Horizontal)
         main_split.setChildrenCollapsible(True)
         main_split.setHandleWidth(8)
         main_split.addWidget(left_col)
         main_split.addWidget(center_col)
         main_split.addWidget(right_col)
-        # sensible starting widths: sides ~250, center takes the rest
         main_split.setStretchFactor(0, 0)
         main_split.setStretchFactor(1, 1)
         main_split.setStretchFactor(2, 0)
-        main_split.setSizes([250, 800, 200])
+        main_split.setSizes([250, 800, 250])
         self._main_split = main_split
-        self._left_split = left_split
-        self._right_split = right_split
 
-        # restore saved panel sizes, and persist them whenever they change
+        # everything starts hidden until the user pulls a panel open
+        for side in ("left", "right", "bottom"):
+            self.toggle_panel(side, False)
+
         self._restore_layout()
-        for sp, key in ((main_split, "main"), (left_split, "left"), (right_split, "right")):
-            sp.splitterMoved.connect(lambda _p, _i, k=key: self._save_layout())
+        main_split.splitterMoved.connect(lambda _p, _i: self._save_layout())
 
         root.addWidget(main_split)
 
@@ -310,35 +342,94 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         p.end()
         super().paintEvent(event)
 
-    def _load_panels(self):
-        """Discover the tool panels in panels/ and instantiate them."""
-        self.panels = []
+    def _load_modules(self):
+        """Discover every module in panels/. They are NOT placed anywhere yet —
+        panels start empty and the user picks what goes in them."""
+        # Panels start empty, so the widgets modules normally provide may not
+        # exist. These stand-ins keep the editor working either way: writing to
+        # a log that isn't on screen simply goes nowhere instead of crashing.
+        self.results = _NullWidget()
+        self.json_view = _NullWidget()
+        self.json_label = _NullWidget()
+        self.palette = _NullList()
+        self.palette_search = _NullWidget()
+        self.other_projects = _NullList()
+        self.settings_area = None
+        self.settings_host = None
+        self.settings_layout = None
+
+        self.all_modules = []
         try:
-            from panel_base import discover_panels
+            from panel_base import discover_modules
             here = os.path.dirname(os.path.abspath(__file__))
-            for cls in discover_panels(os.path.join(here, "panels")):
+            for cls in discover_modules(os.path.join(here, "panels")):
                 try:
-                    self.panels.append(cls(self))
+                    self.all_modules.append(cls(self))
                 except Exception as e:
-                    print(f"  [panel warn] {cls.__name__} failed to start: {e}")
+                    print(f"  [module warn] {cls.__name__} failed to start: {e}")
         except Exception as e:
-            print(f"  [panel warn] panel system unavailable: {e}")
+            print(f"  [module warn] module system unavailable: {e}")
 
-    def _panels_on(self, side):
-        return [p for p in getattr(self, "panels", []) if p.SIDE == side]
+    @property
+    def panels(self):
+        """Every module currently placed in a panel (what the hooks fire on)."""
+        out = []
+        for box in getattr(self, "panels_by_side", {}).values():
+            out.extend(box.modules)
+        return out
 
-    def _panel_box(self, panel):
-        """Build one panel and wrap it with its title header."""
-        from panel_base import wrap_panel
-        box = wrap_panel(panel, self._tag)
-        # the JSON panel's header label is flipped to CODE for servo projects,
-        # so keep a handle on it
-        if panel.ID == "json":
-            for child in box.findChildren(QLabel):
-                if child.text() == panel.TITLE:
-                    self.json_label = child
-                    break
-        return box
+    def toggle_panel(self, side, is_open):
+        """Show or hide one edge panel."""
+        box = self.panels_by_side.get(side)
+        if box is None:
+            return
+        box.setVisible(is_open)
+        arrow = self.arrows_by_side.get(side)
+        if arrow is not None and arrow.open != is_open:
+            arrow.set_open(is_open)
+        self._save_layout()
+
+    def toggle_module(self, module, panel, wanted):
+        """Tick/untick a module in a panel's [+] menu."""
+        if wanted:
+            # a module lives in exactly one panel — take it out of its old one
+            if module.host is not None and module.host is not panel:
+                module.host.remove_module(module)
+            panel.add_module(module)
+            if not panel.isVisible():
+                self.toggle_panel(panel.side, True)
+            try:
+                module.on_project_opened(self.current_project)
+            except Exception:
+                pass
+        else:
+            if module.host is not None:
+                module.host.remove_module(module)
+        self.apply_theme()
+        self._save_layout()
+
+    def move_module(self, module, target_panel):
+        """Middle-mouse drag dropped a module onto another panel."""
+        if module.host is target_panel:
+            return
+        if module.host is not None:
+            module.host.remove_module(module)
+        target_panel.add_module(module)
+        if not target_panel.isVisible():
+            self.toggle_panel(target_panel.side, True)
+        self.apply_theme()
+        self._save_layout()
+
+    def panel_at_global(self, gpos):
+        """Which panel is under this screen position (for middle-mouse drops)."""
+        for box in self.panels_by_side.values():
+            if not box.isVisible():
+                continue
+            top_left = box.mapToGlobal(box.rect().topLeft())
+            rect = box.rect().translated(top_left)
+            if rect.contains(gpos):
+                return box
+        return None
 
     def _panels_notify(self, hook, *args):
         """Call an optional hook on every panel, ignoring ones that don't have
@@ -383,13 +474,16 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             from home_screen import GREY_BG as base
         except Exception:
             base = "#3a3a3a"
-        for p in getattr(self, "panels", []):
-            if p.container is not None:
-                p.container.setStyleSheet(
-                    f"QWidget#panelbox_{p.ID}{{background:{base};}}")
-                # setStyleSheet clears this, so re-assert it afterwards or the
-                # container stops painting and the panel smears
-                p.container.setAutoFillBackground(True)
+        # panels and the module frames inside them must paint opaque, or the
+        # translucent window lets old frames show through
+        for side, box in getattr(self, "panels_by_side", {}).items():
+            box.setStyleSheet(f"QWidget#panelbox_{side}{{background:{base};}}")
+            box.setAutoFillBackground(True)
+        for m in getattr(self, "panels", []):
+            if m.container is not None:
+                m.container.setStyleSheet(
+                    f"QWidget#modframe_{m.ID}{{background:{base};}}")
+                m.container.setAutoFillBackground(True)
         # each panel then styles its own inner widget
         self._panels_notify("apply_theme", self._panel_css, (panel, text, border))
         self.update()
@@ -531,11 +625,19 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
 
     # ================= autosave + undo/redo =================
     def _save_layout(self):
+        """Remember which panels are open and which modules each one holds, so
+        the layout you build is the one you get back next launch."""
         try:
+            layout = {}
+            for side, box in getattr(self, "panels_by_side", {}).items():
+                layout[side] = {
+                    "open": box.isVisible(),
+                    "modules": [m.ID for m in box.modules],
+                    "sizes": box.stack.sizes(),
+                }
             save_ui_state({
                 "main": self._main_split.sizes(),
-                "left": self._left_split.sizes(),
-                "right": self._right_split.sizes(),
+                "panels": layout,
             })
         except Exception:
             pass
@@ -543,11 +645,27 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
     def _restore_layout(self):
         st = load_ui_state()
         try:
-            if st.get("main"): self._main_split.setSizes(st["main"])
-            if st.get("left"): self._left_split.setSizes(st["left"])
-            if st.get("right"): self._right_split.setSizes(st["right"])
+            if st.get("main"):
+                self._main_split.setSizes(st["main"])
         except Exception:
             pass
+        # put the saved modules back where they were
+        by_id = {m.ID: m for m in getattr(self, "all_modules", [])}
+        for side, info in (st.get("panels") or {}).items():
+            box = getattr(self, "panels_by_side", {}).get(side)
+            if box is None:
+                continue
+            for mid in info.get("modules", []):
+                mod = by_id.get(mid)
+                if mod is not None and mod.host is None:
+                    box.add_module(mod)
+            if info.get("open"):
+                self.toggle_panel(side, True)
+            try:
+                if info.get("sizes"):
+                    box.stack.setSizes(info["sizes"])
+            except Exception:
+                pass
 
     def _snapshot(self):
         """Current workflow as a JSON string (used for undo history)."""

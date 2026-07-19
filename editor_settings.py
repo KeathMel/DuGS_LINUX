@@ -238,6 +238,9 @@ class SettingsPanelMixin:
                         self._undo_stack.pop(0)
             except Exception:
                 pass
+        # the settings module may not be in any panel yet — nothing to fill in
+        if getattr(self, "settings_layout", None) is None:
+            return
         while self.settings_layout.count():
             it = self.settings_layout.takeAt(0)
             w = it.widget()

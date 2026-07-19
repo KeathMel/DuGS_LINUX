@@ -458,22 +458,28 @@ class Canvas(QWidget):
                 # darken slightly so nodes and wires stay readable on top
                 p.fillRect(self.rect(), QColor(0, 0, 0, 90))
 
-            # dot grid. The dots are drawn as a light overlay whose contrast is
-            # picked from the background behind them, so they stay visible on a
-            # dark canvas AND on a bright photo instead of vanishing into it.
-            if s.get("canvas_dots", True):
-                step = 24 * self.scale
-                if step >= 8:
-                    p.setPen(QPen(self.dot_color(), 1))
-                    ox = self.offset.x() % step
-                    oy = self.offset.y() % step
-                    yy = oy - step
-                    while yy < self.height():
-                        xx = ox - step
-                        while xx < self.width():
-                            p.drawPoint(int(xx), int(yy))
-                            xx += step
-                        yy += step
+        # Dot grid. Drawn whether or not a background image is set — it is the
+        # canvas's own grid, not part of the image.
+        #
+        # The spacing stays CONSTANT on screen instead of scaling with zoom.
+        # Tying it to zoom made the dots shrink and crowd together as you
+        # zoomed, which is the opposite of what a grid should do: it should
+        # feel like a fixed surface the world moves across.
+        if s.get("canvas_dots", True):
+            step = 26.0                     # pixels between dots, fixed
+            radius = 1.4                    # visible size, fixed
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(self.dot_color()))
+            ox = self.offset.x() % step
+            oy = self.offset.y() % step
+            yy = oy - step
+            while yy < self.height() + step:
+                xx = ox - step
+                while xx < self.width() + step:
+                    p.drawEllipse(QPointF(xx, yy), radius, radius)
+                    xx += step
+                yy += step
+            p.setBrush(Qt.BrushStyle.NoBrush)
 
         p.translate(self.offset)
         p.scale(self.scale, self.scale)

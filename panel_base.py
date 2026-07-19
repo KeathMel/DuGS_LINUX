@@ -1,87 +1,95 @@
 """
-panel_base.py — the framework for editor panels.
+panel_base.py — the module/panel system for the editor.
 
-The tools around the canvas (Nodes, Settings, Other Projects, Run Log,
-JSON/CODE) are all panels. Each one lives in its own file in panels/ and is
-discovered at startup, exactly like nodes are.
+TWO CONCEPTS
+============
+A MODULE is a tool: the node palette, the settings form, the run log, the
+JSON/code view. Each lives in its own file in panels/ and is discovered at
+startup, exactly like nodes are.
 
-WRITING A PANEL
-===============
+A PANEL is a container down one edge of the editor (left, right or bottom).
+Panels start EMPTY. You pull one open with the arrow on its edge, press its
+[+] button, and tick which modules go in it. A panel can hold several modules
+stacked, resizable against each other by the three-dot grip lines between them.
+
+WRITING A MODULE
+================
 Drop a file in panels/ with a class subclassing Panel:
 
     from panel_base import Panel
     from PyQt6.QtWidgets import QLabel
 
-    class NotesPanel(Panel):
-        ID    = "notes"          # unique, used in the saved layout
-        TITLE = "NOTES"          # the little header label
-        SIDE  = "left"           # left | right | bottom_right
-        ORDER = 50               # position within its side (low = higher up)
-        STRETCH = 1              # how much space it takes vs its neighbours
+    class NotesModule(Panel):
+        ID    = "notes"        # unique, used when saving the layout
+        TITLE = "NOTES"        # shown in the header and in the [+] list
+        SIDE  = "left"         # default side if nothing is saved yet
+        ORDER = 50             # order within that side
+        STRETCH = 1            # share of space vs its neighbours
 
         def build(self):
-            "Return the widget that goes inside the panel."
             return QLabel("hello")
 
-That's it — restart and it appears. `self.editor` is the Editor, so a panel can
-reach the canvas, the current project, the API, whatever it needs.
+`self.editor` is the Editor, so a module can reach the canvas, the current
+project, the API, whatever it needs.
 
 OPTIONAL HOOKS
 ==============
-    on_project_opened(name)   project was opened/switched
-    on_selection_changed(node) a node was selected (None when deselected)
-    on_workflow_changed()     the graph changed (node added/moved/edited)
-    on_run_event(evt)         a live run event arrived
-    refresh()                 asked to redraw itself
-    apply_theme(css, colors)  the appearance settings changed
+    on_project_opened(name)    project opened/switched
+    on_selection_changed(node) a node was selected (None = deselected)
+    on_workflow_changed()      the graph changed
+    on_run_event(evt)          a live run event arrived
+    refresh()                  redraw yourself
+    apply_theme(css, colors)   appearance settings changed
+    header_widgets()           extra buttons to sit beside the title
 
-Every hook is optional; leave out what you don't need. Panels that raise are
-logged and skipped rather than taking the editor down.
+All optional. A module that raises is logged and skipped rather than taking the
+editor down.
 """
 import os
 import sys
 import inspect
 import importlib.util
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout
+from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtGui import QPainter, QColor, QCursor
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter,
+    QSplitterHandle, QMenu,
+)
 
 
+# --------------------------------------------------------------- MODULE BASE
 class Panel:
-    """Base class for a tool panel around the canvas."""
+    """Base class for a module that can sit inside a panel."""
 
     ID = "panel"
     TITLE = "PANEL"
-    SIDE = "left"          # left | right | bottom_right
+    SIDE = "left"          # left | right | bottom
     ORDER = 100
     STRETCH = 1
-    CLOSABLE = True        # can the user hide it
-    SHOW_HEADER = True     # draw the little TITLE label above the content
+    SHOW_HEADER = True
 
     def __init__(self, editor):
         self.editor = editor
         self.widget = None      # the built content widget
-        self.container = None   # header + content wrapper
+        self.container = None   # the ModuleFrame wrapping it
+        self.host = None        # the panel currently holding it
 
-    # ---- the one thing every panel must implement ----
     def build(self) -> QWidget:
         raise NotImplementedError(f"{type(self).__name__} must implement build()")
 
-    # ---- optional hooks, all no-ops by default ----
+    # optional hooks
     def on_project_opened(self, name): pass
     def on_selection_changed(self, node): pass
     def on_workflow_changed(self): pass
     def on_run_event(self, evt): pass
     def refresh(self): pass
     def apply_theme(self, css, colors): pass
-
-    # ---- header widgets a panel can add next to its title (e.g. a copy button)
-    def header_widgets(self) -> list:
-        return []
+    def header_widgets(self) -> list: return []
 
 
-def discover_panels(panels_dir: str) -> list:
-    """Load every Panel subclass out of panels/, sorted by SIDE then ORDER."""
+def discover_modules(panels_dir: str) -> list:
+    """Load every Panel subclass out of panels/."""
     found = []
     if not os.path.isdir(panels_dir):
         return found
@@ -103,46 +111,266 @@ def discover_panels(panels_dir: str) -> list:
                 if issubclass(obj, Panel) and obj is not Panel and hasattr(obj, "ID"):
                     found.append(obj)
         except Exception as e:
-            print(f"  [panel warn] could not load {fname}: {e}")
+            print(f"  [module warn] could not load {fname}: {e}")
     found.sort(key=lambda c: (c.SIDE, c.ORDER))
     return found
 
 
-def wrap_panel(panel: Panel, tag_fn=None) -> QWidget:
-    """Build a panel and put its TITLE header above it, matching the existing
-    editor styling. `tag_fn` is the editor's _tag() so headers look identical.
-
-    The container is given an opaque background: the app window is translucent,
-    so a widget that paints nothing lets the previous frame show through and the
-    UI smears on top of itself.
-    """
-    content = panel.build()
-    panel.widget = content
-
-    box = QWidget()
-    box.setObjectName(f"panelbox_{panel.ID}")   # so CSS can target only this
-    # opaque background: the app window is translucent, so a panel that paints
-    # nothing lets the previous frame show through and the UI smears
-    box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-    box.setAutoFillBackground(True)
-    lay = QVBoxLayout(box)
-    lay.setContentsMargins(4, 4, 4, 4)
-    lay.setSpacing(4)
-
-    if panel.SHOW_HEADER:
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        if tag_fn is not None:
-            head.addWidget(tag_fn(panel.TITLE))
+# ---------------------------------------------------------------- DOT GRIPS
+def _draw_dots(widget, painter, horizontal, count=3, gap=5, alpha=120):
+    """Three little dots, used everywhere something is draggable."""
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(255, 255, 255, alpha))
+    cx, cy = widget.width() / 2, widget.height() / 2
+    span = range(-(count // 2), count // 2 + 1)
+    for i in span:
+        if horizontal:
+            painter.drawEllipse(QPoint(int(cx + i * gap), int(cy)), 1, 1)
         else:
-            lbl = QLabel(panel.TITLE)
-            lbl.setStyleSheet("color:#888;font-family:monospace;font-size:9px;")
-            head.addWidget(lbl)
-        head.addStretch()
-        for w in panel.header_widgets():
-            head.addWidget(w)
-        lay.addLayout(head)
+            painter.drawEllipse(QPoint(int(cx), int(cy + i * gap)), 1, 1)
 
-    lay.addWidget(content, 1)
-    panel.container = box
-    return box
+
+class _DotHandle(QSplitterHandle):
+    """Splitter handle with three dots, so it is obvious you can drag it."""
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        horizontal = (self.orientation() == Qt.Orientation.Vertical)
+        _draw_dots(self, p, horizontal)
+
+
+class DotSplitter(QSplitter):
+    """Splitter whose handles show the three-dot grip."""
+
+    def createHandle(self):
+        return _DotHandle(self.orientation(), self)
+
+
+class GripDots(QWidget):
+    """The three-dot grab indicator in a module header."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(12, 16)
+        self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        self.setToolTip("hold middle mouse button here to move this module")
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        _draw_dots(self, p, horizontal=False, gap=4)
+
+
+# ------------------------------------------------------------ MODULE FRAME
+class ModuleFrame(QWidget):
+    """One module inside a panel: a header (grip dots + title + buttons) with
+    the module's own widget below it.
+
+    Middle-mouse-drag anywhere on the frame to move the module to another
+    panel — the drop target is whichever panel is under the cursor on release.
+    """
+
+    def __init__(self, module, panel, editor):
+        super().__init__()
+        self.module = module
+        self.panel = panel
+        self.editor = editor
+        self._drag_from = None
+        self.setObjectName(f"modframe_{module.ID}")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 2, 4, 4)
+        lay.setSpacing(3)
+
+        if module.SHOW_HEADER:
+            head = QWidget()
+            head.setFixedHeight(18)
+            hl = QHBoxLayout(head)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.setSpacing(4)
+            hl.addWidget(GripDots())
+            title = QLabel(module.TITLE)
+            title.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:9px;")
+            hl.addWidget(title)
+            hl.addStretch()
+            for w in module.header_widgets():
+                hl.addWidget(w)
+            lay.addWidget(head)
+
+        content = module.build()
+        module.widget = content
+        module.container = self
+        module.host = panel
+        lay.addWidget(content, 1)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.MiddleButton:
+            self._drag_from = e.globalPosition().toPoint()
+            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+        else:
+            super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.MiddleButton and self._drag_from is not None:
+            self.unsetCursor()
+            self._drag_from = None
+            target = self.editor.panel_at_global(e.globalPosition().toPoint())
+            if target is not None and target is not self.panel:
+                self.editor.move_module(self.module, target)
+        else:
+            super().mouseReleaseEvent(e)
+
+
+# ----------------------------------------------------------------- PANEL BOX
+class PanelBox(QWidget):
+    """A container down one edge of the editor.
+
+    Starts empty and collapsed. The [+] at the bottom lists every discovered
+    module with a tick — ticking adds it to this panel, unticking removes it
+    again, so you build the layout you want instead of getting a fixed one.
+    """
+
+    def __init__(self, side, editor):
+        super().__init__()
+        self.side = side               # left | right | bottom
+        self.editor = editor
+        self.modules = []              # Panel instances currently held
+        self.setObjectName(f"panelbox_{side}")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        # modules stack vertically on the sides, horizontally along the bottom
+        orient = (Qt.Orientation.Horizontal if side == "bottom"
+                  else Qt.Orientation.Vertical)
+        self.stack = DotSplitter(orient)
+        self.stack.setChildrenCollapsible(True)
+        self.stack.setHandleWidth(8)
+        outer.addWidget(self.stack, 1)
+
+        # the [+] strip: what this panel is showing, and how to change it
+        bar = QHBoxLayout()
+        bar.setContentsMargins(4, 0, 4, 3)
+        bar.setSpacing(4)
+        self.plus = QPushButton("+")
+        self.plus.setFixedSize(18, 16)
+        self.plus.setToolTip("choose which modules this panel shows")
+        self.plus.setStyleSheet(
+            "QPushButton{font-size:11px;padding:0px;border:1px solid #666;"
+            "color:#aaa;border-radius:3px;background:rgba(0,0,0,0.25);}"
+            "QPushButton:hover{color:#fff;border-color:#999;}")
+        self.plus.clicked.connect(self.show_module_menu)
+        bar.addWidget(self.plus)
+        self.summary = QLabel("")
+        self.summary.setStyleSheet("color:#777;font-family:monospace;font-size:8px;")
+        bar.addWidget(self.summary)
+        bar.addStretch()
+        outer.addLayout(bar)
+
+        self._refresh_summary()
+
+    # ---- module management -------------------------------------------------
+    def add_module(self, module):
+        if module in self.modules:
+            return
+        frame = ModuleFrame(module, self, self.editor)
+        self.stack.addWidget(frame)
+        self.modules.append(module)
+        self._apply_stretch()
+        self._refresh_summary()
+
+    def remove_module(self, module):
+        if module not in self.modules:
+            return
+        if module.container is not None:
+            module.container.setParent(None)
+            module.container.deleteLater()
+        module.container = None
+        module.host = None
+        self.modules.remove(module)
+        self._refresh_summary()
+
+    def _apply_stretch(self):
+        sizes = []
+        total = sum(max(1, m.STRETCH) for m in self.modules) or 1
+        span = (self.width() if self.side == "bottom" else self.height()) or 400
+        for m in self.modules:
+            sizes.append(int(span * max(1, m.STRETCH) / total))
+        if sizes:
+            self.stack.setSizes(sizes)
+
+    def _refresh_summary(self):
+        if self.modules:
+            self.summary.setText(" · ".join(m.TITLE.lower() for m in self.modules))
+        else:
+            self.summary.setText("empty — press + to add a module")
+
+    # ---- the [+] menu ------------------------------------------------------
+    def show_module_menu(self):
+        """List every module with a tick showing whether this panel has it."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu{background:#1e1e1e;color:#ddd;font-family:monospace;"
+            "font-size:11px;border:1px solid #555;}"
+            "QMenu::item:selected{background:#333;}")
+        mine = {m.ID for m in self.modules}
+        for mod in self.editor.all_modules:
+            act = menu.addAction(mod.TITLE)
+            act.setCheckable(True)
+            act.setChecked(mod.ID in mine)
+            # elsewhere = held by a different panel, so say so
+            if mod.ID not in mine and mod.host is not None:
+                act.setText(f"{mod.TITLE}   (in {mod.host.side})")
+            act.triggered.connect(
+                lambda checked, m=mod: self.editor.toggle_module(m, self, checked))
+        if not self.editor.all_modules:
+            a = menu.addAction("no modules found in panels/")
+            a.setEnabled(False)
+        menu.exec(self.plus.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+
+
+# ------------------------------------------------------------- EDGE ARROW
+class EdgeArrow(QPushButton):
+    """The little arrow on an edge that pulls its panel open or shut."""
+
+    def __init__(self, side, on_toggle):
+        super().__init__()
+        self.side = side
+        self.open = False
+        self.on_toggle = on_toggle
+        if side == "bottom":
+            self.setFixedSize(34, 12)
+        else:
+            self.setFixedSize(12, 34)
+        self.setStyleSheet(
+            "QPushButton{border:none;background:rgba(255,255,255,0.06);"
+            "color:#999;font-size:9px;padding:0px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.14);color:#fff;}")
+        self.clicked.connect(self._clicked)
+        self._sync()
+
+    def _clicked(self):
+        self.open = not self.open
+        self._sync()
+        self.on_toggle(self.side, self.open)
+
+    def set_open(self, is_open):
+        self.open = is_open
+        self._sync()
+
+    def _sync(self):
+        arrows = {
+            ("left", False): "\u203a",   # ›
+            ("left", True): "\u2039",    # ‹
+            ("right", False): "\u2039",
+            ("right", True): "\u203a",
+            ("bottom", False): "\u2039",
+            ("bottom", True): "\u203a",
+        }
+        self.setText(arrows.get((self.side, self.open), "\u203a"))
+        self.setToolTip(f"{'hide' if self.open else 'show'} the {self.side} panel")
