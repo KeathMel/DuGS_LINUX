@@ -39,6 +39,8 @@ class SettingsPanel(Panel):
             pass
 
     def apply_theme(self, css, colors):
+        # colors[0] is already transparent when 'no background' is on, so the
+        # same code path gives a solid panel or a see-through one
         if self.widget is None or not colors:
             return
         panel, text, border = colors

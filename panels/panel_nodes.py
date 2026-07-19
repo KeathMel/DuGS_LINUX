@@ -48,6 +48,8 @@ class NodesPanel(Panel):
             pass
 
     def apply_theme(self, css, colors):
+        # colors[0] is already transparent when 'no background' is on, so the
+        # same code path gives a solid panel or a see-through one
         if colors and getattr(self.editor, "palette", None) is not None:
             panel, text, border = colors
             self.editor.palette.setStyleSheet(

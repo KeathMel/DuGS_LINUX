@@ -31,5 +31,7 @@ class RunLogPanel(Panel):
         return box
 
     def apply_theme(self, css, colors):
+        # colors[0] is already transparent when 'no background' is on, so the
+        # same code path gives a solid panel or a see-through one
         if self.widget is not None and css:
             self.widget.setStyleSheet(css)
