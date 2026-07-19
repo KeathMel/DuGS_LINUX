@@ -19,7 +19,7 @@ from panel_base import Panel
 class JsonCodePanel(Panel):
     ID = "json"
     TITLE = "JSON"
-    SIDE = "bottom_right"
+    SIDE = "bottom"
     ORDER = 20
     STRETCH = 2
 
