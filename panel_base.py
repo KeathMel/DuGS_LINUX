@@ -50,7 +50,7 @@ import sys
 import inspect
 import importlib.util
 
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QEvent
 from PyQt6.QtGui import QPainter, QColor, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter,
@@ -205,22 +205,33 @@ class ModuleFrame(QWidget):
         module.host = panel
         lay.addWidget(content, 1)
 
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.MiddleButton:
-            self._drag_from = e.globalPosition().toPoint()
-            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
-        else:
-            super().mousePressEvent(e)
+        # Mouse events land on whichever child is under the cursor (a list, a
+        # text box), so they never reach this frame. Watching the frame and
+        # every descendant means the middle-button drag works anywhere on the
+        # module, not just the few pixels of bare header.
+        self._watch(self)
 
-    def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.MiddleButton and self._drag_from is not None:
-            self.unsetCursor()
-            self._drag_from = None
-            target = self.editor.panel_at_global(e.globalPosition().toPoint())
-            if target is not None and target is not self.panel:
-                self.editor.move_module(self.module, target)
-        else:
-            super().mouseReleaseEvent(e)
+    def _watch(self, w):
+        w.installEventFilter(self)
+        for child in w.findChildren(QWidget):
+            child.installEventFilter(self)
+
+    def eventFilter(self, obj, e):
+        et = e.type()
+        if et == QEvent.Type.MouseButtonPress:
+            if e.button() == Qt.MouseButton.MiddleButton:
+                self._drag_from = e.globalPosition().toPoint()
+                self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+                return True          # swallow it so the child ignores it
+        elif et == QEvent.Type.MouseButtonRelease:
+            if e.button() == Qt.MouseButton.MiddleButton and self._drag_from is not None:
+                self.unsetCursor()
+                self._drag_from = None
+                target = self.editor.panel_at_global(e.globalPosition().toPoint())
+                if target is not None and target is not self.panel:
+                    self.editor.move_module(self.module, target)
+                return True
+        return super().eventFilter(obj, e)
 
 
 # ----------------------------------------------------------------- PANEL BOX

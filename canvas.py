@@ -442,10 +442,18 @@ class Canvas(QWidget):
         # Skip this and the previous frame is never cleared, so the whole UI
         # smears and draws on top of itself.
         s = getattr(self, "ui_settings", {}) or {}
-        base = self.base_bg_color()
-        p.fillRect(self.rect(), base)
+        no_bg = s.get("canvas_no_background", False)
 
-        if not s.get("canvas_no_background", False):
+        if no_bg:
+            # "no background" means paint nothing of our own — the old
+            # see-through look. The window is translucent, so clear to fully
+            # transparent rather than skipping the fill entirely, otherwise the
+            # previous frame is never erased and the canvas smears.
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+            p.fillRect(self.rect(), QColor(0, 0, 0, 0))
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        else:
+            p.fillRect(self.rect(), self.base_bg_color())
             pm = self._bg_image()
             if pm is not None:
                 # scale to cover the widget, centered, so it never squashes

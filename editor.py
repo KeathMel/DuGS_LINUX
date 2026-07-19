@@ -64,28 +64,43 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self.app = app; self.current_project = None; self.meta_by_type = {}
         self._last_results = {}        # node name -> ports (kept after a run)
         self._last_inputs = {}         # node name -> items that entered it
-        root = QHBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(0)
+        # The window is one vertical stack: a full-width TOP BAR across the
+        # top, and everything else below it. Panels therefore start under the
+        # bar instead of beside it, so a panel can run the full height of the
+        # work area without the logo pushing it down.
+        root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
 
-        def col(width=None):
-            w = QWidget()
-            if width:
-                w.setMinimumWidth(60)
-            return w
+        # ===================== TOP BAR (spans the whole width)
+        topbar = QHBoxLayout()
+        topbar.setContentsMargins(0, 0, 0, 0)
+        topbar.setSpacing(8)
 
-        # ===================== LEFT COLUMN (settings / projects / json-of-selected)
-        left_col = QWidget()
-        lc = QVBoxLayout(left_col); lc.setContentsMargins(0, 0, 6, 0); lc.setSpacing(6)
         home = QLabel("DuGS")
         home.setStyleSheet(f"color:{ACCENT}; font-family:monospace; font-size:20px;")
         home.setCursor(Qt.CursorShape.PointingHandCursor)
         home.mousePressEvent = lambda _e: self.app.go_home()
         self.logo = home
-        lc.addWidget(home)
+        topbar.addWidget(home)
+
+        self.proj_label = QLabel("-")
+        self.proj_label.setStyleSheet(
+            f"color:{ACCENT}; font-family:monospace; font-size:14px;")
+        topbar.addWidget(self.proj_label)
+        topbar.addStretch()
+
+        self.run_btn = QPushButton("Run"); self.run_btn.clicked.connect(self.run)
+        self.sim_btn = QPushButton("\u25b6 Simulate")
+        self.sim_btn.clicked.connect(self.simulate)
+        self.sim_btn.setVisible(False)      # servo projects only
+        save_btn = QPushButton("Save"); save_btn.clicked.connect(self.save)
+        for b in (save_btn, self.sim_btn, self.run_btn):
+            topbar.addWidget(b)
+        root.addLayout(topbar)
 
         # ---- PANELS -----------------------------------------------------
-        # Panels are containers down each edge. They start EMPTY and collapsed:
-        # you pull one open with its edge arrow, press [+], and tick which
-        # modules it should show. Modules themselves are plugins in panels/.
+        # Panels are containers down each edge of the WORK AREA (below the top
+        # bar). They start EMPTY and collapsed: pull one open with the arrow on
+        # its edge, press [+], and tick which modules it should show.
         self._load_modules()
 
         self.panel_left = PanelBox("left", self)
@@ -106,62 +121,53 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             "bottom": self.arrow_bottom,
         }
 
-        lc.addWidget(self.panel_left, 1)
+        # ===================== WORK AREA (arrows on the true edges)
+        work = QHBoxLayout()
+        work.setContentsMargins(0, 0, 0, 0)
+        work.setSpacing(0)
 
-        # ===================== CENTER COLUMN (canvas)
+        # the arrows sit hard against the real left/right edges of the screen,
+        # pinned to the top of the work area so they are always findable
+        left_edge = QVBoxLayout(); left_edge.setContentsMargins(0, 0, 0, 0)
+        left_edge.addWidget(self.arrow_left); left_edge.addStretch()
+        work.addLayout(left_edge)
+
+        self._main_split = DotSplitter(Qt.Orientation.Horizontal)
+        self._main_split.setChildrenCollapsible(True)
+        self._main_split.setHandleWidth(8)
+
+        # center: canvas with the bottom panel (and its arrow) beneath it
         center_col = QWidget()
-        cc = QVBoxLayout(center_col); cc.setContentsMargins(6, 0, 6, 0); cc.setSpacing(6)
-        bar = QHBoxLayout()
-        # the arrows that pull each side panel open sit in the toolbar
-        bar.addWidget(self.arrow_left)
-        self.proj_label = QLabel("-"); self.proj_label.setStyleSheet(f"color:{ACCENT}; font-family:monospace; font-size:14px;")
-        bar.addWidget(self.proj_label); bar.addStretch()
-        self.run_btn = QPushButton("Run"); self.run_btn.clicked.connect(self.run)
-        self.sim_btn = QPushButton("\u25b6 Simulate")
-        self.sim_btn.clicked.connect(self.simulate)
-        self.sim_btn.setVisible(False)      # servo projects only
-        save_btn = QPushButton("Save"); save_btn.clicked.connect(self.save)
-        for b in (save_btn, self.sim_btn, self.run_btn): bar.addWidget(b)
-        bar.addWidget(self.arrow_right)
-        cc.addLayout(bar)
-
+        cc = QVBoxLayout(center_col)
+        cc.setContentsMargins(6, 0, 6, 0); cc.setSpacing(4)
         self.canvas = Canvas(self)
         cc.addWidget(self.canvas, 1)
-
-        # the bottom panel lives under the canvas, with its arrow beside it
-        bottom_bar = QHBoxLayout()
-        bottom_bar.setContentsMargins(0, 0, 0, 0)
-        bottom_bar.addWidget(self.arrow_bottom)
-        bottom_bar.addStretch()
-        cc.addLayout(bottom_bar)
+        bottom_edge = QHBoxLayout(); bottom_edge.setContentsMargins(0, 0, 0, 0)
+        bottom_edge.addWidget(self.arrow_bottom); bottom_edge.addStretch()
+        cc.addLayout(bottom_edge)
         cc.addWidget(self.panel_bottom)
 
-        # ===================== RIGHT COLUMN
-        right_col = QWidget()
-        rc = QVBoxLayout(right_col); rc.setContentsMargins(6, 0, 0, 0); rc.setSpacing(6)
-        rc.addWidget(self.panel_right, 1)
+        self._main_split.addWidget(self.panel_left)
+        self._main_split.addWidget(center_col)
+        self._main_split.addWidget(self.panel_right)
+        self._main_split.setStretchFactor(0, 0)
+        self._main_split.setStretchFactor(1, 1)
+        self._main_split.setStretchFactor(2, 0)
+        self._main_split.setSizes([250, 800, 250])
+        work.addWidget(self._main_split, 1)
 
-        # ===================== MAIN HORIZONTAL SPLITTER (the 3 columns)
-        main_split = DotSplitter(Qt.Orientation.Horizontal)
-        main_split.setChildrenCollapsible(True)
-        main_split.setHandleWidth(8)
-        main_split.addWidget(left_col)
-        main_split.addWidget(center_col)
-        main_split.addWidget(right_col)
-        main_split.setStretchFactor(0, 0)
-        main_split.setStretchFactor(1, 1)
-        main_split.setStretchFactor(2, 0)
-        main_split.setSizes([250, 800, 250])
-        self._main_split = main_split
+        right_edge = QVBoxLayout(); right_edge.setContentsMargins(0, 0, 0, 0)
+        right_edge.addWidget(self.arrow_right); right_edge.addStretch()
+        work.addLayout(right_edge)
+
+        root.addLayout(work, 1)
 
         # everything starts hidden until the user pulls a panel open
         for side in ("left", "right", "bottom"):
             self.toggle_panel(side, False)
 
         self._restore_layout()
-        main_split.splitterMoved.connect(lambda _p, _i: self._save_layout())
-
-        root.addWidget(main_split)
+        self._main_split.splitterMoved.connect(lambda _p, _i: self._save_layout())
 
         # --- undo/redo + autosave state ---
         self._undo_stack = []      # list of workflow-JSON snapshots (strings)
@@ -421,14 +427,24 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self._save_layout()
 
     def panel_at_global(self, gpos):
-        """Which panel is under this screen position (for middle-mouse drops)."""
-        for box in self.panels_by_side.values():
-            if not box.isVisible():
-                continue
-            top_left = box.mapToGlobal(box.rect().topLeft())
-            rect = box.rect().translated(top_left)
-            if rect.contains(gpos):
-                return box
+        """Which panel is under this screen position (for middle-mouse drops).
+
+        A closed panel is still a valid target: its edge arrow counts as the
+        drop zone, so you can drag a module into a panel you have not opened
+        yet and it opens itself.
+        """
+        for side, box in self.panels_by_side.items():
+            if box.isVisible():
+                rect = box.rect().translated(box.mapToGlobal(box.rect().topLeft()))
+                if rect.contains(gpos):
+                    return box
+        for side, arrow in getattr(self, "arrows_by_side", {}).items():
+            if arrow.isVisible():
+                rect = arrow.rect().translated(arrow.mapToGlobal(arrow.rect().topLeft()))
+                # a little slack so you don't have to hit 12 pixels exactly
+                rect.adjust(-14, -14, 14, 14)
+                if rect.contains(gpos):
+                    return self.panels_by_side.get(side)
         return None
 
     def _panels_notify(self, hook, *args):
