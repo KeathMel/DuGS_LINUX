@@ -294,6 +294,22 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             for nd in leftover:
                 self._add_palette_node(nd, WHITE)
 
+    def paintEvent(self, event):
+        """Paint the editor's own background.
+
+        The app window is translucent (ui.py sets WA_TranslucentBackground), so
+        a screen that paints nothing lets whatever was behind it — the home
+        screen — stay visible underneath the workflow. Filling here stops that.
+        """
+        try:
+            from home_screen import GREY_BG as base
+        except Exception:
+            base = "#3a3a3a"
+        p = QPainter(self)
+        p.fillRect(self.rect(), _QColor(base))
+        p.end()
+        super().paintEvent(event)
+
     def _load_panels(self):
         """Discover the tool panels in panels/ and instantiate them."""
         self.panels = []
@@ -361,8 +377,20 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self._panel_css = (f"background: {panel}; color:{text}; "
                            f"font-family:monospace; font-size:9px; "
                            f"border:1px solid {border};")
-        # each panel styles itself — don't also style its widgets from here or
-        # the two fight and the panel ends up with whichever ran last
+        # The window is translucent, so each panel's container must paint an
+        # opaque background or old frames stay on screen and the UI smears.
+        try:
+            from home_screen import GREY_BG as base
+        except Exception:
+            base = "#3a3a3a"
+        for p in getattr(self, "panels", []):
+            if p.container is not None:
+                p.container.setStyleSheet(
+                    f"QWidget#panelbox_{p.ID}{{background:{base};}}")
+                # setStyleSheet clears this, so re-assert it afterwards or the
+                # container stops painting and the panel smears
+                p.container.setAutoFillBackground(True)
+        # each panel then styles its own inner widget
         self._panels_notify("apply_theme", self._panel_css, (panel, text, border))
         self.update()
 

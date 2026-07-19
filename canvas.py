@@ -214,6 +214,7 @@ class Canvas(QWidget):
         self.ui_settings = {}
         self._bg_pixmap = None
         self._bg_pixmap_path = None
+        self._bg_lum = None
         self.reload_theme()
         self._band_start = None          # rubber-band selection origin (world)
         self._band_now = None
@@ -363,6 +364,7 @@ class Canvas(QWidget):
         # a new image means the cached pixmap is stale
         self._bg_pixmap = None
         self._bg_pixmap_path = None
+        self._bg_lum = None
         self.update()
 
     def _bg_image(self):
@@ -379,11 +381,70 @@ class Canvas(QWidget):
         self._bg_pixmap_path = path
         return pm
 
+    def base_bg_color(self):
+        """The canvas's own opaque background colour.
+
+        Comes from the settings popup's base colour so the canvas matches the
+        panels, defaulting to the same grey the home screen uses.
+        """
+        # GREY_BG is the shared base grey the home screen uses; keeping the
+        # canvas on the same colour makes the app look like one piece.
+        try:
+            from home_screen import GREY_BG
+            default = GREY_BG
+        except Exception:
+            default = "#3a3a3a"
+        c = QColor(default)
+        return c if c.isValid() else QColor("#3a3a3a")
+
+    def _image_luminance(self, pm):
+        """Average brightness of the background image, cached — used to decide
+        whether the grid dots should be light or dark."""
+        if getattr(self, "_bg_lum", None) is not None:
+            return self._bg_lum
+        img = pm.toImage().scaled(12, 12, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+        tot = n = 0
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                tot += 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+                n += 1
+        self._bg_lum = (tot / n) if n else 0
+        return self._bg_lum
+
+    def dot_color(self):
+        """Grid-dot colour picked to stay visible against whatever is behind it.
+
+        Like the Minecraft crosshair: rather than a fixed colour that vanishes
+        on a similar background, this flips to light dots on a dark canvas and
+        dark dots on a light one, so the grid never blends away.
+        """
+        s = getattr(self, "ui_settings", {}) or {}
+        # if a background image is set, judge against its overall brightness
+        # (already darkened by the overlay), otherwise against the base colour
+        pm = self._bg_image()
+        if pm is not None and not s.get("canvas_no_background", False):
+            lum = self._image_luminance(pm) * 0.65   # the dark overlay dims it
+        else:
+            c = self.base_bg_color()
+            lum = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+        if lum > 128:
+            return QColor(0, 0, 0, 60)       # light background -> dark dots
+        return QColor(255, 255, 255, 45)     # dark background -> light dots
+
     def paintEvent(self, _):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # ---- background (screen space, before the world transform) ----
+        # The app window is translucent (WA_TranslucentBackground in ui.py),
+        # which means every widget MUST paint an opaque background every frame.
+        # Skip this and the previous frame is never cleared, so the whole UI
+        # smears and draws on top of itself.
         s = getattr(self, "ui_settings", {}) or {}
+        base = self.base_bg_color()
+        p.fillRect(self.rect(), base)
+
         if not s.get("canvas_no_background", False):
             pm = self._bg_image()
             if pm is not None:
@@ -396,16 +457,14 @@ class Canvas(QWidget):
                 p.drawPixmap(x, y, scaled)
                 # darken slightly so nodes and wires stay readable on top
                 p.fillRect(self.rect(), QColor(0, 0, 0, 90))
-            # no image -> leave the widget's own background alone rather than
-            # painting over whatever the app stylesheet already gave us
 
-            # n8n-style dot grid
+            # dot grid. The dots are drawn as a light overlay whose contrast is
+            # picked from the background behind them, so they stay visible on a
+            # dark canvas AND on a bright photo instead of vanishing into it.
             if s.get("canvas_dots", True):
                 step = 24 * self.scale
-                # skip when the dots would be denser than useful (also stops
-                # the loop below from running tens of thousands of times)
                 if step >= 8:
-                    p.setPen(QPen(QColor(255, 255, 255, 30), 1))
+                    p.setPen(QPen(self.dot_color(), 1))
                     ox = self.offset.x() % step
                     oy = self.offset.y() % step
                     yy = oy - step

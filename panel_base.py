@@ -43,6 +43,7 @@ import sys
 import inspect
 import importlib.util
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout
 
 
@@ -109,13 +110,23 @@ def discover_panels(panels_dir: str) -> list:
 
 def wrap_panel(panel: Panel, tag_fn=None) -> QWidget:
     """Build a panel and put its TITLE header above it, matching the existing
-    editor styling. `tag_fn` is the editor's _tag() so headers look identical."""
+    editor styling. `tag_fn` is the editor's _tag() so headers look identical.
+
+    The container is given an opaque background: the app window is translucent,
+    so a widget that paints nothing lets the previous frame show through and the
+    UI smears on top of itself.
+    """
     content = panel.build()
     panel.widget = content
 
     box = QWidget()
+    box.setObjectName(f"panelbox_{panel.ID}")   # so CSS can target only this
+    # opaque background: the app window is translucent, so a panel that paints
+    # nothing lets the previous frame show through and the UI smears
+    box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    box.setAutoFillBackground(True)
     lay = QVBoxLayout(box)
-    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setContentsMargins(4, 4, 4, 4)
     lay.setSpacing(4)
 
     if panel.SHOW_HEADER:
