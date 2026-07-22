@@ -9,6 +9,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECTS_DIR = os.path.join(HERE, "projects")
 TABELS_DIR = os.path.join(HERE, "tabels")
 CREDENTIALS_DIR = os.path.join(HERE, "credentials")
+MEMORY_DIR = os.path.join(HERE, "memory_banks")
 DOWNLOADS = os.path.expanduser("~/Downloads")
 
 
@@ -112,3 +113,85 @@ def save_ui_state(d):
 
 def new_tabel(n):
     save_tabel(n, {"name": n, "columns": ["column1"], "rows": []})
+
+
+# ---- memory banks -------------------------------------------------------
+# A memory bank is a small key/value store the AI/workflow can save things
+# into, like a Tabel but simpler: each key holds a value plus optional
+# expiry. Stored as plain JSON files so it works anywhere, no database.
+import time as _time
+
+
+def list_memory_banks():
+    return _list(MEMORY_DIR)
+
+
+def load_memory_bank(n):
+    try:
+        return _load(MEMORY_DIR, n)
+    except Exception:
+        return {"name": n, "entries": {}}
+
+
+def save_memory_bank(n, d):
+    _ensure(MEMORY_DIR)
+    _save(MEMORY_DIR, n, d)
+
+
+def new_memory_bank(n):
+    save_memory_bank(n, {"name": n, "entries": {}})
+
+
+def delete_memory_bank(n):
+    try:
+        os.remove(_path(MEMORY_DIR, n))
+    except Exception:
+        pass
+
+
+def _bank_alive(entry):
+    """An entry is alive if it has no expiry, or its expiry is still ahead."""
+    exp = entry.get("expires_at")
+    return exp is None or exp > _time.time()
+
+
+def memory_get(bank, key):
+    """Read one key, honouring expiry. Returns None if missing or expired."""
+    d = load_memory_bank(bank)
+    entry = (d.get("entries") or {}).get(key)
+    if entry is None or not _bank_alive(entry):
+        return None
+    return entry.get("value")
+
+
+def memory_all(bank):
+    """Every live key/value in the bank, dropping expired ones as we go."""
+    d = load_memory_bank(bank)
+    entries = d.get("entries") or {}
+    out, changed = {}, False
+    for k, e in list(entries.items()):
+        if _bank_alive(e):
+            out[k] = e.get("value")
+        else:
+            del entries[k]; changed = True
+    if changed:
+        save_memory_bank(bank, d)
+    return out
+
+
+def memory_set(bank, key, value, ttl_seconds=None, append=False):
+    """Write a key. ttl_seconds=None means it never expires. append=True keeps
+    the old value and adds to it (list or string) instead of overwriting."""
+    d = load_memory_bank(bank)
+    entries = d.setdefault("entries", {})
+    expires = (_time.time() + ttl_seconds) if ttl_seconds else None
+    if append and key in entries and _bank_alive(entries[key]):
+        old = entries[key].get("value")
+        if isinstance(old, list):
+            value = old + (value if isinstance(value, list) else [value])
+        else:
+            value = f"{old}\n{value}"
+    entries[key] = {"value": value, "expires_at": expires,
+                    "updated_at": _time.time()}
+    save_memory_bank(bank, d)
+    return value

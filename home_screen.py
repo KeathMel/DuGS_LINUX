@@ -174,7 +174,12 @@ class IconBrowser(QWidget):
         self.refresh()
 
     def names(self):
-        return list_projects() if self.kind == "project" else list_tabels()
+        if self.kind == "project":
+            return list_projects()
+        if self.kind == "memory":
+            from storage import list_memory_banks
+            return list_memory_banks()
+        return list_tabels()
 
     def refresh(self):
         self.grid_host.clear()
@@ -263,6 +268,11 @@ class IconBrowser(QWidget):
 
     def open(self, name):
         if self.kind == "project": self.app.open_project(name)
+        elif self.kind == "memory":
+            # a full bank editor is optional; if the app doesn't provide one,
+            # banks are still fully usable through the Memory nodes
+            if hasattr(self.app, "open_memory"):
+                self.app.open_memory(name)
         else: self.app.open_tabel(name)
 
 
@@ -766,11 +776,13 @@ class Home(QWidget):
         tabs.setSpacing(0)
         self.tab_projects = QPushButton("Projects")
         self.tab_tabels = QPushButton("Tabels")
+        self.tab_memory = QPushButton("Memory")
         self.tab_creds = QPushButton("Credentials")
         self.tab_projects.clicked.connect(lambda: self.select("project"))
         self.tab_tabels.clicked.connect(lambda: self.select("tabel"))
+        self.tab_memory.clicked.connect(lambda: self.select("memory"))
         self.tab_creds.clicked.connect(lambda: self.select("credential"))
-        for t in (self.tab_projects, self.tab_tabels, self.tab_creds):
+        for t in (self.tab_projects, self.tab_tabels, self.tab_memory, self.tab_creds):
             t.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             t.setFixedHeight(34)
             tabs.addWidget(t, 1)
@@ -784,9 +796,11 @@ class Home(QWidget):
         self.browsers = QStackedWidget()
         self.proj_browser = IconBrowser("project", app, accent=btn_color)
         self.tabel_browser = IconBrowser("tabel", app, accent=btn_color)
+        self.memory_browser = IconBrowser("memory", app, accent=btn_color)
         self.creds_panel = CredentialsPanel(app, accent=btn_color)
         self.browsers.addWidget(self.proj_browser)
         self.browsers.addWidget(self.tabel_browser)
+        self.browsers.addWidget(self.memory_browser)
         self.browsers.addWidget(self.creds_panel)
 
         # an outline around the file area so it looks like a defined region
@@ -932,6 +946,7 @@ class Home(QWidget):
 
         self.proj_browser.set_accent(btn_color)
         self.tabel_browser.set_accent(btn_color)
+        self.memory_browser.set_accent(btn_color)
         self.creds_panel.set_accent(btn_color)
         self.preview.set_accent(btn_color)
 
@@ -959,6 +974,8 @@ class Home(QWidget):
             self._tab_style(section == "project", btn_color, "left"))
         self.tab_tabels.setStyleSheet(
             self._tab_style(section == "tabel", btn_color, "mid"))
+        self.tab_memory.setStyleSheet(
+            self._tab_style(section == "memory", btn_color, "mid"))
         self.tab_creds.setStyleSheet(
             self._tab_style(section == "credential", btn_color, "right"))
         # the preview only makes sense for projects
@@ -969,6 +986,9 @@ class Home(QWidget):
         elif section == "tabel":
             self.browsers.setCurrentWidget(self.tabel_browser); self.tabel_browser.refresh()
             self.new_btn.setText("+ New Tabel"); self.new_btn.setVisible(True)
+        elif section == "memory":
+            self.browsers.setCurrentWidget(self.memory_browser); self.memory_browser.refresh()
+            self.new_btn.setText("+ New Memory Bank"); self.new_btn.setVisible(True)
         else:
             self.browsers.setCurrentWidget(self.creds_panel); self.creds_panel.refresh()
             self.new_btn.setVisible(False)
@@ -985,6 +1005,11 @@ class Home(QWidget):
                     save_project(name, {"name": name, "kind": kind,
                                         "nodes": [], "connections": {}})
                     self.app.open_project(name)
+        elif self.section == "memory":
+            name, ok = QInputDialog.getText(self, "New Memory Bank", "Bank name:")
+            if ok and name.strip():
+                from storage import new_memory_bank
+                name = name.strip(); new_memory_bank(name); self.select("memory")
         else:
             name, ok = QInputDialog.getText(self, "New Tabel", "Tabel name:")
             if ok and name.strip():

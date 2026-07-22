@@ -183,6 +183,21 @@ class NodePopupMixin:
                     def s(): node.params[k] = ww.toPlainText(); self.mark_changed(push_undo=False); rp()
                     return s
                 cb = mk(key, w, refresh_preview); w.textChanged.connect(cb); w._on_change = cb
+            elif ptype in ("tabel", "memory"):
+                w = QComboBox()
+                if ptype == "tabel":
+                    from storage import list_tabels
+                    opts = [""] + list_tabels()
+                else:
+                    from storage import list_memory_banks
+                    opts = [""] + list_memory_banks()
+                w.addItems(opts)
+                if cur is not None and str(cur) in opts:
+                    w.setCurrentText(str(cur))
+                def mkmemsel(k, ww):
+                    def s(): node.params[k] = ww.currentText() or None; self.mark_changed()
+                    return s
+                w.currentTextChanged.connect(mkmemsel(key, w))
             elif ptype == "select":
                 w = QComboBox()
                 opts = [str(o) for o in p.get("options", [])]

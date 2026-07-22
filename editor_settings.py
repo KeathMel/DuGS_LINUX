@@ -371,6 +371,20 @@ class SettingsPanelMixin:
                     return s
                 widget.currentTextChanged.connect(mktab(key, widget))
 
+            elif ptype == "memory":
+                widget = QComboBox()
+                from storage import list_memory_banks
+                banks = list_memory_banks()
+                widget.addItem("")
+                widget.addItems(banks)
+                if cur and str(cur) in banks:
+                    widget.setCurrentText(str(cur))
+                widget.setStyleSheet("font-size:13px;")
+                def mkmem(k, w):
+                    def s(): node.params[k] = w.currentText() or None; self.mark_changed()
+                    return s
+                widget.currentTextChanged.connect(mkmem(key, widget))
+
             elif ptype == "bool":
                 widget = QCheckBox()
                 widget.setChecked(bool(cur))
