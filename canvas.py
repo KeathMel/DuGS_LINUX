@@ -622,8 +622,10 @@ class Canvas(QWidget):
                     p.setPen(base); f = QFont("monospace"); f.setPointSize(9); f.setBold(True); p.setFont(f)
                     p.drawText(n.rect(), Qt.AlignmentFlag.AlignCenter, n.title)
 
+                # under the title: the node's own (editable) name, not its type
+                # id — so a renamed node shows the name you gave it
                 p.setPen(QColor(ACCENT)); f2 = QFont("monospace"); f2.setPointSize(7); p.setFont(f2)
-                p.drawText(QRectF(n.x, n.y + n.s - 18, n.s, 16), Qt.AlignmentFlag.AlignCenter, n.type_id)
+                p.drawText(QRectF(n.x, n.y + n.s - 18, n.s, 16), Qt.AlignmentFlag.AlignCenter, n.name)
             # status glyph top-right corner during/after a run
             if state:
                 glyph = {"running": "▶", "done": "✓", "error": "✗"}.get(state, "")
