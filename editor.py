@@ -93,7 +93,12 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self.sim_btn.clicked.connect(self.simulate)
         self.sim_btn.setVisible(False)      # servo projects only
         save_btn = QPushButton("Save"); save_btn.clicked.connect(self.save)
-        for b in (save_btn, self.sim_btn, self.run_btn):
+        self.deploy_btn = QPushButton("Deploy")
+        self.deploy_btn.setToolTip(
+            "Send this workflow to a running DuGS Runner so it keeps working "
+            "when the app is closed")
+        self.deploy_btn.clicked.connect(self.deploy)
+        for b in (save_btn, self.deploy_btn, self.sim_btn, self.run_btn):
             topbar.addWidget(b)
         root.addLayout(topbar)
 
@@ -703,6 +708,59 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         if btn:
             btn.setText("✓ copied"); btn.setStyleSheet(f"font-size:9px; padding:0px 4px; border:1px solid {ACCENT}; color:{ACCENT}; border-radius:3px;")
             QTimer.singleShot(1200, lambda: (btn.setText("⎘ copy"), btn.setStyleSheet("font-size:9px; padding:0px 4px; border:1px solid #444; color:#888; border-radius:3px;")))
+
+    def deploy(self):
+        """Send this workflow to a DuGS Runner so it keeps running with the
+        app closed.
+
+        The runner saves it and registers its triggers straight away, so a
+        webhook answers immediately and a schedule starts counting — no file
+        copying and no restart on the server.
+        """
+        from PyQt6.QtWidgets import QInputDialog
+        import json as _json
+        import urllib.request
+
+        if getattr(self, "project_kind", "normal") == "servo":
+            self.results.setText(
+                "Servo projects generate Arduino code — flash the board "
+                "instead of deploying.")
+            return
+
+        if not self.current_project:
+            return
+        self.save()
+        wf = self.canvas.to_workflow(self.current_project)
+        wf["kind"] = getattr(self, "project_kind", "normal")
+        if not wf.get("nodes"):
+            self.results.setText("Nothing to deploy — the canvas is empty.")
+            return
+
+        # remember the last server so it's one click next time
+        last = load_ui_state().get("deploy_url", "http://localhost:5800")
+        url, ok = QInputDialog.getText(self, "Deploy", "Runner address:", text=last)
+        if not ok or not url.strip():
+            return
+        url = url.strip().rstrip("/")
+        try:
+            st = load_ui_state(); st["deploy_url"] = url; save_ui_state(st)
+        except Exception:
+            pass
+
+        try:
+            req = urllib.request.Request(
+                f"{url}/deploy", data=_json.dumps(wf).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                resp = _json.loads(r.read().decode())
+            trigs = ", ".join(resp.get("triggers") or []) or "no trigger"
+            self.results.setText(
+                f"deployed '{resp.get('workflow')}' to {url}\n"
+                f"running on: {trigs}")
+        except Exception as e:
+            self.results.setText(
+                f"deploy failed: {e}\n\n"
+                f"Is the runner up? Try: curl {url}/health")
 
     def save(self):
         if not self.current_project: return
