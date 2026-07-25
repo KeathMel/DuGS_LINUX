@@ -29,6 +29,84 @@ from storage import list_credentials
 from editor_widgets import (DragJsonTree, DropLineEdit, DropTextEdit,
                             ExpandableText, HelpLabel)
 
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
+from PyQt6.QtCore import QRectF, QPointF
+
+
+class _MiniCanvas(QWidget):
+    """A shrunk view of the whole graph shown at the bottom of the node popup.
+
+    It draws every node as a small block and the wires between them, then marks
+    the node whose detail is open — a filled accent block with a ring — so you
+    always see where in the flow you are.
+    """
+
+    def __init__(self, canvas, marked_node, accent):
+        super().__init__()
+        self.canvas = canvas
+        self.marked = marked_node
+        self.accent = accent
+        self.setStyleSheet("background:#101010;border:1px solid #333;border-radius:4px;")
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # paint our own dark backing so the strip reads as a little canvas
+        p.fillRect(self.rect(), QColor("#101010"))
+        p.setPen(QPen(QColor("#333"), 1))
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 4, 4)
+        nodes = getattr(self.canvas, "nodes", [])
+        if not nodes:
+            p.setPen(QColor("#555"))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "empty canvas")
+            return
+
+        # bounds of the graph in world coordinates
+        xs = [n.x for n in nodes]; ys = [n.y for n in nodes]
+        maxs = max(n.s for n in nodes)
+        minx, maxx = min(xs), max(xs) + maxs
+        miny, maxy = min(ys), max(ys) + maxs
+        gw = max(1.0, maxx - minx); gh = max(1.0, maxy - miny)
+
+        pad = 12
+        aw = self.width() - pad * 2; ah = self.height() - pad * 2
+        scale = min(aw / gw, ah / gh)
+        ox = pad + (aw - gw * scale) / 2
+        oy = pad + (ah - gh * scale) / 2
+
+        def sx(x): return ox + (x - minx) * scale
+        def sy(y): return oy + (y - miny) * scale
+
+
+        # wires first — canvas.connections is a list of
+        # (src_node, out_idx, dst_node, in_idx) tuples
+        p.setPen(QPen(QColor(255, 255, 255, 45), 1))
+        for conn in getattr(self.canvas, "connections", []):
+            try:
+                src, _oi, dst, _ii = conn
+                p.drawLine(QPointF(sx(src.x + src.s), sy(src.y + src.s / 2)),
+                           QPointF(sx(dst.x), sy(dst.y + dst.s / 2)))
+            except Exception:
+                pass
+
+        # nodes
+        for n in nodes:
+            r = QRectF(sx(n.x), sy(n.y), max(4.0, n.s * scale), max(4.0, n.s * scale))
+            is_marked = (n is self.marked)
+            if is_marked:
+                p.setBrush(QBrush(QColor(self.accent)))
+                p.setPen(QPen(QColor("#fff"), 2))
+            else:
+                dev = str(n.type_id).startswith("device.")
+                p.setBrush(QBrush(QColor(0, 0, 0, 140)))
+                p.setPen(QPen(QColor("#ff6b6b") if dev else QColor(self.accent), 1))
+            p.drawRoundedRect(r, 3, 3)
+            if is_marked:
+                ring = r.adjusted(-4, -4, 4, 4)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(QColor(self.accent), 1))
+                p.drawRoundedRect(ring, 4, 4)
+
 
 class NodePopupMixin:
     def open_node_popup(self, node):
@@ -45,7 +123,16 @@ class NodePopupMixin:
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"{node.name}  ({node.type_id})")
-        dlg.setMinimumWidth(820); dlg.setMinimumHeight(420)
+        # big centered modal, roughly half the screen — like n8n's node detail
+        scr = dlg.screen().availableGeometry() if dlg.screen() else None
+        if scr is not None:
+            w = int(scr.width() * 0.62)
+            h = int(scr.height() * 0.72)
+            dlg.resize(w, h)
+            dlg.move(scr.center().x() - w // 2, scr.center().y() - h // 2)
+        else:
+            dlg.resize(1000, 640)
+        dlg.setMinimumWidth(820); dlg.setMinimumHeight(460)
         QShortcut(QKeySequence("Escape"), dlg, dlg.accept)
         dlg.setStyleSheet("QDialog{background:#141414;}"
                           "QLabel{color:#ccc;font-family:monospace;}"
@@ -264,6 +351,13 @@ class NodePopupMixin:
         cols.addLayout(right_box, 2)
 
         outer.addLayout(cols, 1)
+
+        # ---- mini-canvas strip: the whole graph in miniature, with THIS node
+        # marked, so you can see where you are while the detail is open ----
+        strip = _MiniCanvas(self.canvas, node,
+                            "#ff6b6b" if str(node.type_id).startswith("device.") else ACCENT)
+        strip.setFixedHeight(120)
+        outer.addWidget(strip)
 
         close = QPushButton("Close"); close.clicked.connect(dlg.accept)
         outer.addWidget(close)
