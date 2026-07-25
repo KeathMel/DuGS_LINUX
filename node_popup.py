@@ -90,17 +90,29 @@ class _MiniCanvas(QWidget):
                 pass
 
         # nodes
+        from canvas import node_pixmap
         for n in nodes:
-            r = QRectF(sx(n.x), sy(n.y), max(4.0, n.s * scale), max(4.0, n.s * scale))
+            sz = max(10.0, n.s * scale)
+            r = QRectF(sx(n.x), sy(n.y), sz, sz)
             is_marked = (n is self.marked)
             if is_marked:
                 p.setBrush(QBrush(QColor(self.accent)))
                 p.setPen(QPen(QColor("#fff"), 2))
             else:
                 dev = str(n.type_id).startswith("device.")
-                p.setBrush(QBrush(QColor(0, 0, 0, 140)))
+                p.setBrush(QBrush(QColor(0, 0, 0, 150)))
                 p.setPen(QPen(QColor("#ff6b6b") if dev else QColor(self.accent), 1))
             p.drawRoundedRect(r, 3, 3)
+
+            # the node's icon, centered in its block
+            try:
+                pm = node_pixmap(n.type_id, int(sz * 0.7))
+                if pm is not None and not pm.isNull():
+                    p.drawPixmap(int(r.center().x() - pm.width() / 2),
+                                 int(r.center().y() - pm.height() / 2), pm)
+            except Exception:
+                pass
+
             if is_marked:
                 ring = r.adjusted(-4, -4, 4, 4)
                 p.setBrush(Qt.BrushStyle.NoBrush)
@@ -126,12 +138,12 @@ class NodePopupMixin:
         # big centered modal, roughly half the screen — like n8n's node detail
         scr = dlg.screen().availableGeometry() if dlg.screen() else None
         if scr is not None:
-            w = int(scr.width() * 0.62)
-            h = int(scr.height() * 0.72)
+            w = int(scr.width() * 0.60)
+            h = scr.height()                       # full height, top to bottom
             dlg.resize(w, h)
-            dlg.move(scr.center().x() - w // 2, scr.center().y() - h // 2)
+            dlg.move(scr.center().x() - w // 2, scr.top())
         else:
-            dlg.resize(1000, 640)
+            dlg.resize(1000, 900)
         dlg.setMinimumWidth(820); dlg.setMinimumHeight(460)
         QShortcut(QKeySequence("Escape"), dlg, dlg.accept)
         dlg.setStyleSheet("QDialog{background:#141414;}"
@@ -356,8 +368,13 @@ class NodePopupMixin:
         # marked, so you can see where you are while the detail is open ----
         strip = _MiniCanvas(self.canvas, node,
                             "#ff6b6b" if str(node.type_id).startswith("device.") else ACCENT)
-        strip.setFixedHeight(120)
-        outer.addWidget(strip)
+        strip.setFixedHeight(130)
+        strip_row = QHBoxLayout()
+        strip_row.addStretch(1)
+        strip.setMaximumWidth(560)          # narrower than the popup, centered
+        strip_row.addWidget(strip, 3)
+        strip_row.addStretch(1)
+        outer.addLayout(strip_row)
 
         close = QPushButton("Close"); close.clicked.connect(dlg.accept)
         outer.addWidget(close)

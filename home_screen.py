@@ -52,7 +52,33 @@ DEFAULT_HOME_UI_SETTINGS = {
     "canvas_no_background": False,  # True = see-through everywhere, dark fog
     "panel_color": None,          # user-picked panel/canvas background colour
     "fog_opacity": 150,           # how dark the fog is when see-through (0-255)
+    "text_scale": 1.0,            # multiplier applied to every font size
 }
+
+
+# ---- text scale ---------------------------------------------------------
+# One multiplier the whole app reads, so a person can make ALL text bigger or
+# smaller while each piece keeps its own relative size (a title stays bigger
+# than a label). Widgets call fs(9), fs(16) etc. instead of hard-coding sizes.
+_TEXT_SCALE = 1.0
+
+
+def text_scale():
+    return _TEXT_SCALE
+
+
+def set_text_scale(mult):
+    global _TEXT_SCALE
+    try:
+        _TEXT_SCALE = max(0.6, min(3.0, float(mult)))
+    except (TypeError, ValueError):
+        _TEXT_SCALE = 1.0
+
+
+def fs(base):
+    """A font size in px with the global text multiplier applied. Never smaller
+    than 6px so nothing vanishes."""
+    return max(6, round(base * _TEXT_SCALE))
 
 
 def load_home_ui_settings():
@@ -65,6 +91,8 @@ def load_home_ui_settings():
     settings = dict(DEFAULT_HOME_UI_SETTINGS)
     if isinstance(data, dict):
         settings.update({k: v for k, v in data.items() if k in DEFAULT_HOME_UI_SETTINGS})
+    # keep the global multiplier in step with what's saved
+    set_text_scale(settings.get("text_scale", 1.0))
     return settings
 
 
@@ -96,6 +124,7 @@ def broadcast_theme_update():
     still-alive screen. Called after the settings popup saves."""
     alive = []
     fresh = load_home_ui_settings()
+    _apply_app_font_scale()
     for ref in _themed_screens:
         widget = ref()
         if widget is None:
@@ -107,6 +136,33 @@ def broadcast_theme_update():
             pass
         alive.append(ref)
     _themed_screens[:] = alive
+
+
+# the base point size Qt's default font starts from, captured once so repeated
+# scaling doesn't compound
+_BASE_APP_PT = None
+
+
+def _apply_app_font_scale():
+    """Scale the whole application's default font by the text multiplier.
+
+    This catches every widget that doesn't hard-code its own font-size — menus,
+    dialogs, list items, buttons — in one shot. Widgets that DO set an explicit
+    size use fs() so they scale too.
+    """
+    global _BASE_APP_PT
+    try:
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            return
+        f = app.font()
+        if _BASE_APP_PT is None:
+            _BASE_APP_PT = f.pointSizeF() if f.pointSizeF() > 0 else 10.0
+        f.setPointSizeF(max(6.0, _BASE_APP_PT * text_scale()))
+        app.setFont(f)
+    except Exception:
+        pass
 
 
 def file_icon(size=64, color=None):
@@ -479,6 +535,7 @@ class HomeSettingsDialog(QDialog):
         self._canvas_no_background = s.get("canvas_no_background", False)
         self._panel_color = s.get("panel_color") or GREY_BG
         self._fog_opacity = int(s.get("fog_opacity", 150))
+        self._text_scale = float(s.get("text_scale", 1.0))
 
         outer = QVBoxLayout(self); outer.setSpacing(14)
 
@@ -637,8 +694,33 @@ class HomeSettingsDialog(QDialog):
         self.fog_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
         lay.addWidget(self.fog_hint)
 
+        # --- text size multiplier ----------------------------------------
+        row6 = QHBoxLayout()
+        row6.addWidget(QLabel("Text size:"))
+        self.text_slider = QSlider(Qt.Orientation.Horizontal)
+        self.text_slider.setRange(60, 250)          # 0.6x .. 2.5x, in tenths
+        self.text_slider.setValue(int(self._text_scale * 100))
+        self.text_slider.setFixedWidth(200)
+        self.text_slider.valueChanged.connect(self._on_text_scale)
+        row6.addWidget(self.text_slider)
+        self.text_value = QLabel(f"{self._text_scale:.2f}x")
+        self.text_value.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
+        row6.addWidget(self.text_value)
+        row6.addStretch()
+        lay.addLayout(row6)
+        self.text_hint = QLabel(
+            "Multiplies every text size across the app — project names, node "
+            "labels, panels, popups. Each keeps its own relative size.")
+        self.text_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
+        self.text_hint.setWordWrap(True)
+        lay.addWidget(self.text_hint)
+
         lay.addStretch()
         return page
+
+    def _on_text_scale(self, v):
+        self._text_scale = v / 100.0
+        self.text_value.setText(f"{self._text_scale:.2f}x")
 
     def _pick_panel_color(self):
         c = QColorDialog.getColor(QColor(self._panel_color), self, "Pick Panel Color")
@@ -738,6 +820,7 @@ class HomeSettingsDialog(QDialog):
         s["canvas_no_background"] = self._canvas_no_background
         s["panel_color"] = self._panel_color
         s["fog_opacity"] = self._fog_opacity
+        s["text_scale"] = self._text_scale
         save_home_ui_settings(s)
         broadcast_theme_update()
         self.accept()
@@ -877,6 +960,7 @@ class Home(QWidget):
 
         self.section = "project"
         self.apply_theme()
+        _apply_app_font_scale()      # honour the saved text multiplier on launch
         self._load_node_meta()
         self.select("project")
         register_themed_screen(self)
