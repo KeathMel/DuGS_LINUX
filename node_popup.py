@@ -24,6 +24,10 @@ from PyQt6.QtWidgets import (
 )
 
 from theme import ACCENT
+try:
+    from home_screen import fs
+except Exception:
+    def fs(n): return n
 from node_base import resolve_expr
 from storage import list_credentials
 from editor_widgets import (DragJsonTree, DropLineEdit, DropTextEdit,
@@ -149,21 +153,21 @@ class NodePopupMixin:
         dlg.setStyleSheet("QDialog{background:#141414;}"
                           "QLabel{color:#ccc;font-family:monospace;}"
                           "QLineEdit,QPlainTextEdit,QComboBox{background:#1e1e1e;color:#fff;"
-                          "border:1px solid #555;border-radius:3px;padding:4px;font-family:monospace;font-size:12px;}")
+                          f"border:1px solid #555;border-radius:3px;padding:4px;font-family:monospace;font-size:{fs(12)}px;}}")
         outer = QVBoxLayout(dlg)
 
         title = QLabel(node.name)
-        title.setStyleSheet(f"color:{NACC};font-family:monospace;font-size:16px;font-weight:bold;")
+        title.setStyleSheet(f"color:{NACC};font-family:monospace;font-size:{fs(16)}px;font-weight:bold;")
         title.setToolTip("double-click to rename")
         title.setCursor(Qt.CursorShape.IBeamCursor)
         outer.addWidget(title)
-        sub = QLabel(node.type_id); sub.setStyleSheet("color:#666;font-family:monospace;font-size:10px;")
+        sub = QLabel(node.type_id); sub.setStyleSheet(f"color:#666;font-family:monospace;font-size:{fs(10)}px;")
         outer.addWidget(sub)
 
         # double-click the title to rename inline (replaces the old name field)
         def _start_rename(_e):
             editor_line = QLineEdit(node.name)
-            editor_line.setStyleSheet(f"color:{NACC};font-family:monospace;font-size:16px;font-weight:bold;"
+            editor_line.setStyleSheet(f"color:{NACC};font-family:monospace;font-size:{fs(16)}px;font-weight:bold;"
                                       "background:#1e1e1e;border:1px solid #555;border-radius:3px;padding:2px;")
             # swap the label for the editor in the layout
             outer.replaceWidget(title, editor_line)
@@ -185,7 +189,7 @@ class NodePopupMixin:
         cols = QHBoxLayout(); cols.setSpacing(10)
 
         def col_label(t):
-            l = QLabel(t); l.setStyleSheet("color:#888;font-family:monospace;font-size:11px;letter-spacing:1px;")
+            l = QLabel(t); l.setStyleSheet(f"color:#888;font-family:monospace;font-size:{fs(11)}px;letter-spacing:1px;")
             return l
 
         # ---- LEFT: input JSON (from upstream nodes' last output) ----
@@ -261,10 +265,10 @@ class NodePopupMixin:
                 if resolved:
                     shown = val if isinstance(val, str) else json.dumps(val)
                     if len(shown) > 200: shown = shown[:200] + "…"
-                    lbl.setStyleSheet("color:#7CFC9B;font-family:monospace;font-size:10px;")
+                    lbl.setStyleSheet(f"color:#7CFC9B;font-family:monospace;font-size:{fs(10)}px;")
                     lbl.setText("= " + shown)
                 else:
-                    lbl.setStyleSheet("color:#666;font-family:monospace;font-size:10px;")
+                    lbl.setStyleSheet(f"color:#666;font-family:monospace;font-size:{fs(10)}px;")
                     lbl.setText("= (no value — run the workflow first)" if preview_ctx
                                 else "= (no upstream data yet)")
             return lbl, refresh
@@ -354,7 +358,7 @@ class NodePopupMixin:
         right_box.addWidget(col_label("OUTPUT"))
         own = self._last_results.get(node.name)
         out_view = QPlainTextEdit(); out_view.setReadOnly(True)
-        out_view.setStyleSheet("color:#9fb;font-size:10px;")
+        out_view.setStyleSheet(f"color:#9fb;font-size:{fs(10)}px;")
         if own:
             out_view.setPlainText(json.dumps(own[:3], indent=2))
         else:

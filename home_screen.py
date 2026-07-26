@@ -124,7 +124,6 @@ def broadcast_theme_update():
     still-alive screen. Called after the settings popup saves."""
     alive = []
     fresh = load_home_ui_settings()
-    _apply_app_font_scale()
     for ref in _themed_screens:
         widget = ref()
         if widget is None:
@@ -136,33 +135,6 @@ def broadcast_theme_update():
             pass
         alive.append(ref)
     _themed_screens[:] = alive
-
-
-# the base point size Qt's default font starts from, captured once so repeated
-# scaling doesn't compound
-_BASE_APP_PT = None
-
-
-def _apply_app_font_scale():
-    """Scale the whole application's default font by the text multiplier.
-
-    This catches every widget that doesn't hard-code its own font-size — menus,
-    dialogs, list items, buttons — in one shot. Widgets that DO set an explicit
-    size use fs() so they scale too.
-    """
-    global _BASE_APP_PT
-    try:
-        from PyQt6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is None:
-            return
-        f = app.font()
-        if _BASE_APP_PT is None:
-            _BASE_APP_PT = f.pointSizeF() if f.pointSizeF() > 0 else 10.0
-        f.setPointSizeF(max(6.0, _BASE_APP_PT * text_scale()))
-        app.setFont(f)
-    except Exception:
-        pass
 
 
 def file_icon(size=64, color=None):
@@ -709,8 +681,8 @@ class HomeSettingsDialog(QDialog):
         row6.addStretch()
         lay.addLayout(row6)
         self.text_hint = QLabel(
-            "Multiplies every text size across the app — project names, node "
-            "labels, panels, popups. Each keeps its own relative size.")
+            "Multiplies the text size inside the node popup. Each piece keeps "
+            "its own relative size.")
         self.text_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
         self.text_hint.setWordWrap(True)
         lay.addWidget(self.text_hint)
@@ -960,7 +932,6 @@ class Home(QWidget):
 
         self.section = "project"
         self.apply_theme()
-        _apply_app_font_scale()      # honour the saved text multiplier on launch
         self._load_node_meta()
         self.select("project")
         register_themed_screen(self)

@@ -25,15 +25,6 @@ from theme import ACCENT, NODE_SIZE
 # image files happen to be named. Resolved pixmaps are cached by (type, size).
 #
 # IF and Switch intentionally share one icon (both are "branch" logic).
-def _fs(base):
-    """Font size with the app-wide text multiplier applied (see home_screen)."""
-    try:
-        from home_screen import fs
-        return fs(base)
-    except Exception:
-        return base
-
-
 ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nodes_images")
 # robotics/device nodes keep their icons separate
 ROBOTICS_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -549,7 +540,7 @@ class Canvas(QWidget):
                 p.setBrush(QBrush(QColor(20, 20, 20, 230)))
                 p.setPen(QPen(wire_col, 1))
                 p.drawRoundedRect(badge, 7, 7)
-                p.setPen(QColor("#fff")); fb = QFont("monospace"); fb.setPointSize(_fs(7)); fb.setBold(True); p.setFont(fb)
+                p.setPen(QColor("#fff")); fb = QFont("monospace"); fb.setPointSize(7); fb.setBold(True); p.setFont(fb)
                 p.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(cnt))
 
             # travelling pulse dot showing data moving along this wire
@@ -565,7 +556,7 @@ class Canvas(QWidget):
                 p.setBrush(QBrush(QColor(40, 16, 16, 240)))
                 p.setPen(QPen(QColor("#ff6b6b"), 1.4))
                 p.drawEllipse(br)
-                p.setPen(QColor("#ff6b6b")); ft = QFont("monospace"); ft.setPointSize(_fs(10)); ft.setBold(True); p.setFont(ft)
+                p.setPen(QColor("#ff6b6b")); ft = QFont("monospace"); ft.setPointSize(10); ft.setBold(True); p.setFont(ft)
                 p.drawText(br, Qt.AlignmentFlag.AlignCenter, "x")
         if self.wire_from:
             n, oi = self.wire_from
@@ -610,11 +601,11 @@ class Canvas(QWidget):
                     p.drawPixmap(int(ix), int(iy), pm)
                 else:
                     p.setPen(base); f = QFont("monospace")
-                    f.setPointSize(_fs(7)); f.setBold(True); p.setFont(f)
+                    f.setPointSize(7); f.setBold(True); p.setFont(f)
                     p.drawText(n.rect(), Qt.AlignmentFlag.AlignCenter, n.title)
                 # the node's NAME sits under the block (n8n style) so the small
                 # box stays uncluttered
-                p.setPen(QColor("#888")); f2 = QFont("monospace"); f2.setPointSize(_fs(7)); p.setFont(f2)
+                p.setPen(QColor("#888")); f2 = QFont("monospace"); f2.setPointSize(7); p.setFont(f2)
                 p.drawText(QRectF(n.x - 20, n.y + n.s + 2, n.s + 40, 12),
                            Qt.AlignmentFlag.AlignCenter, n.name)
             else:
@@ -624,22 +615,22 @@ class Canvas(QWidget):
                     ix = n.x + (n.s - pm.width()) / 2
                     iy = n.y + (n.s - pm.height()) / 2 - 6
                     p.drawPixmap(int(ix), int(iy), pm)
-                    p.setPen(base); f = QFont("monospace"); f.setPointSize(_fs(8)); f.setBold(True); p.setFont(f)
+                    p.setPen(base); f = QFont("monospace"); f.setPointSize(8); f.setBold(True); p.setFont(f)
                     p.drawText(QRectF(n.x, n.y + n.s - 30, n.s, 14),
                                Qt.AlignmentFlag.AlignCenter, n.title)
                 else:
-                    p.setPen(base); f = QFont("monospace"); f.setPointSize(_fs(9)); f.setBold(True); p.setFont(f)
+                    p.setPen(base); f = QFont("monospace"); f.setPointSize(9); f.setBold(True); p.setFont(f)
                     p.drawText(n.rect(), Qt.AlignmentFlag.AlignCenter, n.title)
 
                 # under the title: the node's own (editable) name, not its type
                 # id — so a renamed node shows the name you gave it
-                p.setPen(QColor(ACCENT)); f2 = QFont("monospace"); f2.setPointSize(_fs(7)); p.setFont(f2)
+                p.setPen(QColor(ACCENT)); f2 = QFont("monospace"); f2.setPointSize(7); p.setFont(f2)
                 p.drawText(QRectF(n.x, n.y + n.s - 18, n.s, 16), Qt.AlignmentFlag.AlignCenter, n.name)
             # status glyph top-right corner during/after a run
             if state:
                 glyph = {"running": "▶", "done": "✓", "error": "✗"}.get(state, "")
                 gcol = {"running": "#ffd166", "done": "#7CFC9B", "error": "#ff6b6b"}.get(state, "#fff")
-                p.setPen(QColor(gcol)); fg = QFont("monospace"); fg.setPointSize(_fs(10)); fg.setBold(True); p.setFont(fg)
+                p.setPen(QColor(gcol)); fg = QFont("monospace"); fg.setPointSize(10); fg.setBold(True); p.setFont(fg)
                 p.drawText(QRectF(n.x + n.s - 20, n.y + 1, 18, 16), Qt.AlignmentFlag.AlignCenter, glyph)
             p.setBrush(QBrush(QColor(ACCENT))); p.setPen(QPen(QColor(ACCENT), 1))
             ni = n.n_inputs()
@@ -647,7 +638,7 @@ class Canvas(QWidget):
                 for i in range(ni):
                     p.setBrush(QBrush(base)); p.setPen(QPen(base, 1))
                     p.drawEllipse(n.in_port(i), 7, 7)
-                    p.setPen(QColor("#000")); f3 = QFont("monospace"); f3.setPointSize(_fs(5)); f3.setBold(True); p.setFont(f3)
+                    p.setPen(QColor("#000")); f3 = QFont("monospace"); f3.setPointSize(5); f3.setBold(True); p.setFont(f3)
                     lbl = "IN" if ni == 1 else str(i)
                     p.drawText(QRectF(n.x - 16, n.in_port(i).y() - 6, 16, 12), Qt.AlignmentFlag.AlignCenter, lbl)
             no = n.n_outputs()
@@ -655,7 +646,7 @@ class Canvas(QWidget):
                 for i in range(no):
                     p.setBrush(QBrush(base)); p.setPen(QPen(base, 1))
                     p.drawEllipse(n.out_port(i), 7, 7)
-                    p.setPen(QColor("#000")); f3 = QFont("monospace"); f3.setPointSize(_fs(5)); f3.setBold(True); p.setFont(f3)
+                    p.setPen(QColor("#000")); f3 = QFont("monospace"); f3.setPointSize(5); f3.setBold(True); p.setFont(f3)
                     lbl = "OUT" if no == 1 else str(i)
                     p.drawText(QRectF(n.x + n.s, n.out_port(i).y() - 6, 16, 12), Qt.AlignmentFlag.AlignCenter, lbl)
             p.setPen(QPen(QColor(ACCENT), 1)); p.setBrush(QBrush(QColor(ACCENT)))
@@ -663,7 +654,7 @@ class Canvas(QWidget):
                 dr = n.del_rect()
                 p.setPen(QPen(QColor('#ff6b6b'), 1)); p.setBrush(QBrush(QColor(40, 15, 15, 230)))
                 p.drawRoundedRect(dr, 3, 3)
-                p.setPen(QColor('#ff6b6b')); fx = QFont('monospace'); fx.setPointSize(_fs(9)); p.setFont(fx)
+                p.setPen(QColor('#ff6b6b')); fx = QFont('monospace'); fx.setPointSize(9); p.setFont(fx)
                 p.drawText(dr, Qt.AlignmentFlag.AlignCenter, 'x')
                 rr = self.run_rect(n)
                 p.setPen(QPen(QColor('#7CFC9B'), 1)); p.setBrush(QBrush(QColor(15, 40, 20, 230)))
