@@ -221,15 +221,13 @@ class NodePopupMixin:
         mid_box = QVBoxLayout(); mid_box.setSpacing(4)
         mid_box.addWidget(col_label("PARAMETERS"))
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        # never scroll sideways — fields wrap to the column width instead, so the
-        # parameters stay readable however wide their content is
+        # never scroll sideways — every field wraps to the column width
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        host = _QW(); form = QFormLayout(host)
-        # let rows use the full width and wrap their labels rather than forcing
-        # the column wider than the popup
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        host = _QW()
+        # each parameter is its own stacked block (label on top, field below),
+        # with space between them — reads as a clean list of settings instead of
+        # a label-beside-field jumble that wraps unevenly
+        form = QVBoxLayout(host); form.setSpacing(14); form.setContentsMargins(2, 2, 8, 2)
 
         # (no name field here — double-click the title above to rename)
 
@@ -344,7 +342,8 @@ class NodePopupMixin:
                 cb = mkt(key, w, refresh_preview); w.editingFinished.connect(cb); w._on_change = cb
                 # also live-update the preview as you type/drop, not just on commit
                 w.textChanged.connect(refresh_preview)
-            # short label with the explanation on hover, so rows stay compact
+            # each parameter as its own block: label (with hover help) on top,
+            # the field under it, and the resolved-value preview under that
             row_label = p.get("label", key)
             help_text = p.get("desc", "")
             ex = p.get("example")
@@ -353,11 +352,19 @@ class NodePopupMixin:
                 help_text = (help_text + "\n\n" if help_text else "") + f"example: {ex}"
             if res:
                 help_text = (help_text + "\n" if help_text else "") + f"result: {res}"
-            form.addRow(HelpLabel(row_label, help_text), w)
-            if preview is not None:
-                form.addRow("", preview)
-                refresh_preview()   # show initial state
 
+            card = _QW()
+            cbox = QVBoxLayout(card)
+            cbox.setContentsMargins(0, 0, 0, 0)
+            cbox.setSpacing(3)
+            cbox.addWidget(HelpLabel(row_label, help_text))
+            cbox.addWidget(w)
+            if preview is not None:
+                cbox.addWidget(preview)
+                refresh_preview()
+            form.addWidget(card)
+
+        form.addStretch(1)
         scroll.setWidget(host); mid_box.addWidget(scroll, 1)
         cols.addLayout(mid_box, 3)
 
