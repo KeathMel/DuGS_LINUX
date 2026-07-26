@@ -221,7 +221,15 @@ class NodePopupMixin:
         mid_box = QVBoxLayout(); mid_box.setSpacing(4)
         mid_box.addWidget(col_label("PARAMETERS"))
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        # never scroll sideways — fields wrap to the column width instead, so the
+        # parameters stay readable however wide their content is
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         host = _QW(); form = QFormLayout(host)
+        # let rows use the full width and wrap their labels rather than forcing
+        # the column wider than the popup
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         # (no name field here — double-click the title above to rename)
 
