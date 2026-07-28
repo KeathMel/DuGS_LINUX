@@ -989,7 +989,7 @@ class Home(QWidget):
             self.preview.show_project(None)
             return
         item = items[0]
-        name = item.data(Qt.ItemDataRole.UserRole) or item.text()
+        name = item.text()        
         self.preview.show_project(name)
 
     def _load_node_meta(self):
