@@ -65,7 +65,7 @@ find . -name __pycache__ -type d -exec rm -rf {} +
 The app is for building. If you want workflows running when the app is closed —
 on a Pi, a server, a phone — thats the runner:
 
-https://github.com/KeathMel/DuGS_Runner
+https://github.com/KeathMel/Deploy_DuGS
 
 Build here, hit **Deploy** in the top bar, give it the runners address, and it
 runs there on its own trigger from then on. No GUI on that side, nothing to
