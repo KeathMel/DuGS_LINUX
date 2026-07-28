@@ -93,12 +93,16 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self.sim_btn.clicked.connect(self.simulate)
         self.sim_btn.setVisible(False)      # servo projects only
         save_btn = QPushButton("Save"); save_btn.clicked.connect(self.save)
+        self.download_btn = QPushButton("Download")
+        self.download_btn.setToolTip(
+            "Save this workflow as a .json file to move it to another machine")
+        self.download_btn.clicked.connect(self.download_project)
         self.deploy_btn = QPushButton("Deploy")
         self.deploy_btn.setToolTip(
-            "Send this workflow to a running DuGS Runner so it keeps working "
+            "Copy this workflow into the runner's folder so it keeps working "
             "when the app is closed")
         self.deploy_btn.clicked.connect(self.deploy)
-        for b in (save_btn, self.deploy_btn, self.sim_btn, self.run_btn):
+        for b in (save_btn, self.download_btn, self.deploy_btn, self.sim_btn, self.run_btn):
             topbar.addWidget(b)
         root.addLayout(topbar)
 
@@ -639,6 +643,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self.canvas.load_workflow(wf, self.meta_by_type)
         self.refresh_other_projects(); self.refresh_json(); self.show_node_settings(None)
         self._panels_notify("on_project_opened", name)
+        self._refresh_deploy_button()   # Deploy vs Undeploy for this project
 
     def _apply_project_kind(self):
         """Swap the Run button for Export Code on servo (hardware) projects,
@@ -709,58 +714,98 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             btn.setText("✓ copied"); btn.setStyleSheet(f"font-size:9px; padding:0px 4px; border:1px solid {ACCENT}; color:{ACCENT}; border-radius:3px;")
             QTimer.singleShot(1200, lambda: (btn.setText("⎘ copy"), btn.setStyleSheet("font-size:9px; padding:0px 4px; border:1px solid #444; color:#888; border-radius:3px;")))
 
-    def deploy(self):
-        """Send this workflow to a DuGS Runner so it keeps running with the
-        app closed.
+    def download_project(self):
+        """Save the current workflow as a .json file the person picks, so they
+        can move it to another machine or host it elsewhere."""
+        from PyQt6.QtWidgets import QFileDialog
+        if not self.current_project:
+            return
+        self.save()
+        from storage import export_project, DOWNLOADS
+        import os as _os
+        start = _os.path.join(DOWNLOADS, f"{self.current_project}.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Download workflow", start, "JSON files (*.json)")
+        if not path:
+            return
+        try:
+            export_project(self.current_project, path)
+            self.results.setText(f"downloaded to {path}")
+        except Exception as e:
+            self.results.setText(f"download failed: {e}")
 
-        The runner saves it and registers its triggers straight away, so a
-        webhook answers immediately and a schedule starts counting — no file
-        copying and no restart on the server.
+    def deploy(self):
+        """Copy this workflow into the runner's projects/ folder so it keeps
+        running with the app closed. The runner notices the file and starts it
+        within a few seconds. Deploy again on an already-deployed project (the
+        button reads 'Undeploy') removes it from the folder.
+
+        The runner folder is asked for once and remembered.
         """
-        from PyQt6.QtWidgets import QInputDialog
-        import json as _json
-        import urllib.request
+        from PyQt6.QtWidgets import QFileDialog
+        from storage import (deploy_path, set_deploy_path, deploy_project,
+                             undeploy_project, is_deployed)
 
         if getattr(self, "project_kind", "normal") == "servo":
             self.results.setText(
                 "Servo projects generate Arduino code — flash the board "
                 "instead of deploying.")
             return
-
         if not self.current_project:
             return
+
+        # already deployed -> this click UN-deploys it
+        if is_deployed(self.current_project):
+            try:
+                undeploy_project(self.current_project)
+                self.results.setText(f"undeployed '{self.current_project}'")
+            except Exception as e:
+                self.results.setText(f"undeploy failed: {e}")
+            self._refresh_deploy_button()
+            self._notify_projects_changed()
+            return
+
         self.save()
         wf = self.canvas.to_workflow(self.current_project)
-        wf["kind"] = getattr(self, "project_kind", "normal")
         if not wf.get("nodes"):
             self.results.setText("Nothing to deploy — the canvas is empty.")
             return
 
-        # remember the last server so it's one click next time
-        last = load_ui_state().get("deploy_url", "http://localhost:5800")
-        url, ok = QInputDialog.getText(self, "Deploy", "Runner address:", text=last)
-        if not ok or not url.strip():
-            return
-        url = url.strip().rstrip("/")
-        try:
-            st = load_ui_state(); st["deploy_url"] = url; save_ui_state(st)
-        except Exception:
-            pass
+        # make sure we know where the runner's folder is — ask once, remember
+        if not deploy_path():
+            folder = QFileDialog.getExistingDirectory(
+                self, "Point at the runner's projects folder")
+            if not folder:
+                self.results.setText(
+                    "Deploy needs the runner's projects folder — cancelled.")
+                return
+            set_deploy_path(folder)
 
         try:
-            req = urllib.request.Request(
-                f"{url}/deploy", data=_json.dumps(wf).encode(),
-                headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=15) as r:
-                resp = _json.loads(r.read().decode())
-            trigs = ", ".join(resp.get("triggers") or []) or "no trigger"
+            dest = deploy_project(self.current_project)
             self.results.setText(
-                f"deployed '{resp.get('workflow')}' to {url}\n"
-                f"running on: {trigs}")
+                f"deployed '{self.current_project}'\ninto {dest}\n"
+                f"the runner picks it up within a few seconds")
         except Exception as e:
-            self.results.setText(
-                f"deploy failed: {e}\n\n"
-                f"Is the runner up? Try: curl {url}/health")
+            self.results.setText(f"deploy failed: {e}")
+        self._refresh_deploy_button()
+        self._notify_projects_changed()
+
+    def _refresh_deploy_button(self):
+        """Flip the button between Deploy and Undeploy for the current project."""
+        try:
+            from storage import is_deployed
+            dep = bool(self.current_project) and is_deployed(self.current_project)
+        except Exception:
+            dep = False
+        self.deploy_btn.setText("Undeploy" if dep else "Deploy")
+
+    def _notify_projects_changed(self):
+        """Ask the home screen to repaint so deployed names go green."""
+        try:
+            self.app.home.refresh()
+        except Exception:
+            pass
 
     def save(self):
         if not self.current_project: return

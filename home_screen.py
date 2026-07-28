@@ -242,6 +242,16 @@ class IconBrowser(QWidget):
         it.setData(Qt.ItemDataRole.UserRole, item_kind)   # remember what it is
         if item_kind == "servo":
             it.setForeground(QColor(SERVO_RED))
+        # a deployed project (sitting in the runner's folder) shows GREEN, so
+        # you can see at a glance what's running on the server
+        if item_kind == "project":
+            try:
+                from storage import is_deployed
+                if is_deployed(name):
+                    it.setForeground(QColor("#4ccf6a"))
+                    it.setToolTip("deployed — running on the runner")
+            except Exception:
+                pass
         self.grid_host.addItem(it)
 
     def menu(self, pos):
@@ -310,6 +320,19 @@ class IconBrowser(QWidget):
         elif label == "Rename":
             if not names: return
             name = names[0]
+            # a deployed project can't be renamed — the copy in the runner's
+            # folder is keyed by name, so renaming here would orphan it
+            if self.kind == "project":
+                try:
+                    from storage import is_deployed
+                    if is_deployed(name):
+                        QMessageBox.information(
+                            self, "Can't rename",
+                            f"'{name}' is deployed. Undeploy it first "
+                            "(Deploy button in the editor), then rename.")
+                        return
+                except Exception:
+                    pass
             new, ok = QInputDialog.getText(self, "Rename", "New name:", text=name)
             if ok and new.strip() and new.strip() != name:
                 os.rename(_path(d, name), _path(d, new.strip())); self.refresh()
@@ -966,7 +989,7 @@ class Home(QWidget):
             self.preview.show_project(None)
             return
         item = items[0]
-        name = item.text()
+        name = item.data(Qt.ItemDataRole.UserRole) or item.text()
         self.preview.show_project(name)
 
     def _load_node_meta(self):

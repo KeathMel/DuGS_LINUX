@@ -195,3 +195,68 @@ def memory_set(bank, key, value, ttl_seconds=None, append=False):
                     "updated_at": _time.time()}
     save_memory_bank(bank, d)
     return value
+
+
+# ---- deploy: copying a workflow into a runner's projects/ folder ----------
+# The runner (DuGS_Runner container) watches a projects/ folder and runs
+# whatever lands there. "Deploy" just copies a project's JSON into that folder;
+# the runner picks it up within a few seconds on its own. We remember the
+# folder path so the person only points at it once.
+def deploy_path():
+    """The runner's projects/ folder the app deploys into, or '' if unset."""
+    return load_ui_state().get("deploy_path", "")
+
+
+def set_deploy_path(path):
+    st = load_ui_state()
+    st["deploy_path"] = path or ""
+    save_ui_state(st)
+
+
+def list_deployed():
+    """Names of projects currently sitting in the runner's folder."""
+    p = deploy_path()
+    if not p or not os.path.isdir(p):
+        return []
+    return sorted(f[:-5] for f in os.listdir(p) if f.endswith(".json"))
+
+
+def is_deployed(name):
+    p = deploy_path()
+    return bool(p) and os.path.isfile(os.path.join(p, f"{name}.json"))
+
+
+def deploy_project(name):
+    """Copy a saved project into the runner's folder. Returns the path written.
+    Raises if no deploy path is set or it doesn't exist, so the caller can ask
+    the person to point at the folder."""
+    p = deploy_path()
+    if not p:
+        raise RuntimeError("no deploy folder set")
+    if not os.path.isdir(p):
+        raise RuntimeError(f"deploy folder not found: {p}")
+    data = load_project(name)          # the current saved version
+    dest = os.path.join(p, f"{name}.json")
+    with open(dest, "w") as f:
+        json.dump(data, f, indent=2)
+    return dest
+
+
+def undeploy_project(name):
+    """Remove a project from the runner's folder. The runner stops running it
+    within a few seconds (its auto-reload notices the file is gone)."""
+    p = deploy_path()
+    if not p:
+        return
+    dest = os.path.join(p, f"{name}.json")
+    if os.path.isfile(dest):
+        os.remove(dest)
+
+
+def export_project(name, dest_path):
+    """Write a project's JSON to any path the person chose (the Download
+    button), so they can move a workflow to another machine by hand."""
+    data = load_project(name)
+    with open(dest_path, "w") as f:
+        json.dump(data, f, indent=2)
+    return dest_path
