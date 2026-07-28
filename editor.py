@@ -736,15 +736,13 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
 
     def deploy(self):
         """Copy this workflow into the runner's projects/ folder so it keeps
-        running with the app closed. The runner notices the file and starts it
-        within a few seconds. Deploy again on an already-deployed project (the
-        button reads 'Undeploy') removes it from the folder.
+        running with the app closed. If the project is already deployed, this
+        removes it instead (the button reads 'Undeploy').
 
-        The runner folder is asked for once and remembered.
+        Deploying opens a small dialog: a path field for the runner's folder, a
+        Scan button that hunts the disk for it, and a Complete button.
         """
-        from PyQt6.QtWidgets import QFileDialog
-        from storage import (deploy_path, set_deploy_path, deploy_project,
-                             undeploy_project, is_deployed)
+        from storage import undeploy_project, is_deployed
 
         if getattr(self, "project_kind", "normal") == "servo":
             self.results.setText(
@@ -771,25 +769,115 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             self.results.setText("Nothing to deploy — the canvas is empty.")
             return
 
-        # make sure we know where the runner's folder is — ask once, remember
-        if not deploy_path():
-            folder = QFileDialog.getExistingDirectory(
-                self, "Point at the runner's projects folder")
-            if not folder:
-                self.results.setText(
-                    "Deploy needs the runner's projects folder — cancelled.")
-                return
-            set_deploy_path(folder)
+        self._open_deploy_dialog()
 
-        try:
-            dest = deploy_project(self.current_project)
-            self.results.setText(
-                f"deployed '{self.current_project}'\ninto {dest}\n"
-                f"the runner picks it up within a few seconds")
-        except Exception as e:
-            self.results.setText(f"deploy failed: {e}")
+    def _open_deploy_dialog(self):
+        """The small deploy popup: path field + Scan + Complete."""
+        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                     QLineEdit, QPushButton, QFileDialog)
+        from storage import deploy_path, set_deploy_path, deploy_project
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Deploy")
+        dlg.setMinimumWidth(460)
+        lay = QVBoxLayout(dlg)
+
+        lay.addWidget(QLabel("Runner's projects folder:"))
+
+        row = QHBoxLayout()
+        path_edit = QLineEdit(deploy_path())      # pre-filled if already set
+        path_edit.setPlaceholderText("/home/you/Deploy_DuGS/projects")
+        row.addWidget(path_edit, 1)
+        scan_btn = QPushButton("Scan")
+        scan_btn.setToolTip("Hunt the disk for the runner's projects folder")
+        row.addWidget(scan_btn)
+        browse_btn = QPushButton("\u2026")
+        browse_btn.setToolTip("Browse to the folder")
+        browse_btn.setFixedWidth(32)
+        row.addWidget(browse_btn)
+        lay.addLayout(row)
+
+        status = QLabel("")
+        status.setStyleSheet("color:#888;font-family:monospace;font-size:11px;")
+        lay.addWidget(status)
+
+        def do_scan():
+            status.setText("scanning\u2026")
+            dlg.repaint()
+            found = self._scan_for_runner()
+            if found:
+                path_edit.setText(found)
+                status.setText(f"found: {found}")
+            else:
+                status.setText("no runner folder found — type or browse to it")
+        scan_btn.clicked.connect(do_scan)
+
+        def do_browse():
+            folder = QFileDialog.getExistingDirectory(
+                dlg, "Point at the runner's projects folder",
+                path_edit.text() or "")
+            if folder:
+                path_edit.setText(folder)
+        browse_btn.clicked.connect(do_browse)
+
+        complete = QPushButton("Complete deploy")
+        complete.setStyleSheet(
+            "QPushButton{background:rgba(76,207,106,0.15);color:#4ccf6a;"
+            "border:1px solid #4ccf6a;border-radius:4px;padding:6px 12px;"
+            "font-family:monospace;}")
+        lay.addWidget(complete)
+
+        def do_complete():
+            p = path_edit.text().strip()
+            if not p:
+                status.setText("enter a folder first (or Scan for it)")
+                return
+            import os as _os
+            if not _os.path.isdir(p):
+                status.setText(f"not a folder: {p}")
+                return
+            set_deploy_path(p)
+            try:
+                dest = deploy_project(self.current_project)
+                self.results.setText(
+                    f"deployed '{self.current_project}'\ninto {dest}\n"
+                    f"the runner picks it up within a few seconds")
+                dlg.accept()
+            except Exception as e:
+                status.setText(f"deploy failed: {e}")
+        complete.clicked.connect(do_complete)
+
+        dlg.exec()
         self._refresh_deploy_button()
         self._notify_projects_changed()
+
+    def _scan_for_runner(self):
+        """Hunt common locations for a runner's projects/ folder.
+
+        A runner folder is recognised by a projects/ directory sitting next to
+        dugs_runner.py — so we don't match every random 'projects' folder on
+        the disk. Searches the home folder a few levels deep, which is fast
+        enough and covers where people actually put it.
+        """
+        import os as _os
+        roots = [_os.path.expanduser("~")]
+        best = None
+        for root in roots:
+            for dirpath, dirnames, filenames in _os.walk(root):
+                # don't descend into heavy/hidden trees — keeps the scan quick
+                depth = dirpath[len(root):].count(_os.sep)
+                if depth > 4:
+                    dirnames[:] = []
+                    continue
+                dirnames[:] = [d for d in dirnames
+                               if not d.startswith(".") and d != "node_modules"]
+                if "dugs_runner.py" in filenames and "projects" in dirnames:
+                    return _os.path.join(dirpath, "projects")
+                # weaker fallback: a projects/ folder holding workflow json
+                if _os.path.basename(dirpath) == "projects" and best is None:
+                    if any(f.endswith(".json") for f in filenames):
+                        best = dirpath
+        return best
 
     def _refresh_deploy_button(self):
         """Flip the button between Deploy and Undeploy for the current project."""
