@@ -905,11 +905,23 @@ class RunLogDrawer(QWidget):
         self.list.currentRowChanged.connect(self._show_detail)
         pl.addWidget(self.list)
 
-        # right: the selected run's detail (input/result/error)
+        # right: the selected run's detail (input/result/error), with a copy
+        # button top-right so you can grab a run's data without selecting text
         from PyQt6.QtWidgets import QTextEdit
+        detail_box = QVBoxLayout()
+        detail_box.setSpacing(4)
+        detail_header = QHBoxLayout()
+        detail_header.addStretch()
+        self.copy_btn = QPushButton("\u29c9 Copy")
+        self.copy_btn.setFixedHeight(22)
+        self.copy_btn.setToolTip("Copy this run's full record to the clipboard")
+        self.copy_btn.clicked.connect(self._copy_detail)
+        detail_header.addWidget(self.copy_btn)
+        detail_box.addLayout(detail_header)
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
-        pl.addWidget(self.detail, 1)
+        detail_box.addWidget(self.detail, 1)
+        pl.addLayout(detail_box, 1)
 
         # bottom-right controls: manual refresh, and set-the-runs-folder —
         # same popup pattern as Deploy, just aimed at a different folder
@@ -984,6 +996,22 @@ class RunLogDrawer(QWidget):
             "font-family:monospace;font-size:11px;border:1px solid rgba(255,255,255,0.08);}"
             "QTextEdit{background:rgba(0,0,0,0.25);color:#bbb;"
             "font-family:monospace;font-size:11px;border:1px solid rgba(255,255,255,0.08);}")
+        self.copy_btn.setStyleSheet(
+            f"QPushButton{{background:rgba(0,0,0,0.35);color:{accent};"
+            f"border:1px solid {accent};border-radius:4px;font-size:10px;"
+            f"font-family:monospace;padding:2px 8px;}}"
+            f"QPushButton:hover{{background:rgba(255,255,255,0.12);}}")
+
+    def _copy_detail(self):
+        """Copy the currently shown run's full record to the clipboard."""
+        text = self.detail.toPlainText()
+        if not text:
+            return
+        from PyQt6.QtWidgets import QApplication as _QApp
+        _QApp.clipboard().setText(text)
+        self.copy_btn.setText("\u2713 Copied")
+        from PyQt6.QtCore import QTimer as _QTimer
+        _QTimer.singleShot(1200, lambda: self.copy_btn.setText("\u29c9 Copy"))
 
     def toggle(self):
         self._open = not self._open
@@ -1005,7 +1033,14 @@ class RunLogDrawer(QWidget):
             self.refresh()
 
     def refresh(self):
-        """Reload the run list from the runner's runs/ folder."""
+        """Reload the run list from the runner's runs/ folder.
+
+        Reloading used to reset the scroll to the top every time -- annoying
+        when you're reading an older run and it auto-refreshes out from under
+        you. Now the scrollbar position and whichever run was selected (by
+        its file, not its row -- new runs can push everything down a row)
+        are restored after the reload.
+        """
         try:
             from storage import runs_path, list_runs
         except Exception:
@@ -1019,6 +1054,13 @@ class RunLogDrawer(QWidget):
             self.path_edit.setText(p or "")
             return
 
+        # remember where we were before touching anything
+        scroll_pos = self.list.verticalScrollBar().value()
+        prev_runs = getattr(self, "_runs", [])
+        cur_row = self.list.currentRow()
+        selected_file = (prev_runs[cur_row].get("_file")
+                         if 0 <= cur_row < len(prev_runs) else None)
+
         self._runs = list_runs()
         self.list.clear()
         for r in self._runs:
@@ -1026,10 +1068,19 @@ class RunLogDrawer(QWidget):
             mark = "\u2713" if ok else "\u2717"
             label = f"{mark} {r.get('workflow','?'):16} {r.get('ran_at','')}"
             self.list.addItem(label)
-        if self._runs:
-            self.list.setCurrentRow(0)
-        else:
+
+        if not self._runs:
             self.detail.setPlainText("no runs yet")
+            return
+
+        new_row = 0
+        if selected_file:
+            for i, r in enumerate(self._runs):
+                if r.get("_file") == selected_file:
+                    new_row = i
+                    break
+        self.list.setCurrentRow(new_row)
+        self.list.verticalScrollBar().setValue(scroll_pos)
 
     def _show_detail(self, row):
         if row < 0 or row >= len(getattr(self, "_runs", [])):
