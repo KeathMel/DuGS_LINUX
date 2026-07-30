@@ -194,7 +194,7 @@ class IconBrowser(QWidget):
         return (
             "QListWidget{background:transparent;border:none;}"
             "QListWidget::item{color:#ddd;}"            
-            f"QListWidget::item:selected{{color:{self.accent};background:rgba(255,255,255,0.10);border-radius:4px;}}"
+            "QListWidget::item:selected{{color:{self.accent};background:rgba(255,255,255,0.10);border-radius:4px;}}"
         )
 
     def set_accent(self, color):
