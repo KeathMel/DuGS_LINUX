@@ -302,9 +302,15 @@ def export_project(name, dest_path):
 # to its projects/ folder — same idea as deploy. We remember the runner's
 # base folder once (same value as deploy_path, since runs/ and projects/ are
 # siblings inside it) and read whatever's in runs/.
+# One folder for the runner's runs/ directory, set the same way deploy_path
+# is: point at it once (Scan / browse / type), remembered from then on. Falls
+# back to deriving it next to deploy_path only if it was never set directly —
+# covers upgrading from before this was its own setting.
 def runs_path():
-    """The runner's runs/ folder, derived from the deploy path (they're
-    siblings: <runner>/projects and <runner>/runs)."""
+    """The runner's runs/ folder."""
+    explicit = load_ui_state().get("runs_path", "")
+    if explicit:
+        return explicit
     dp = deploy_path()
     if not dp:
         return ""
@@ -313,12 +319,16 @@ def runs_path():
     return os.path.join(base, "runs")
 
 
+def set_runs_path(path):
+    st = load_ui_state()
+    st["runs_path"] = path or ""
+    save_ui_state(st)
+
+
 def set_runs_path_from_base(base_folder):
-    """Point the deploy path at <base_folder>/projects, so runs_path() can
-    derive <base_folder>/runs from it. Used by the run-log scan/browse dialog
-    when the person points at the runner's root folder instead of projects/
-    directly."""
-    set_deploy_path(os.path.join(base_folder, "projects"))
+    """Point runs_path directly at <base_folder>/runs. Used by the run-log
+    scan/browse dialog when the person points at the runner's root folder."""
+    set_runs_path(os.path.join(base_folder, "runs"))
 
 
 def list_runs(limit=200):

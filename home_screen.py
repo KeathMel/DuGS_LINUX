@@ -911,6 +911,21 @@ class RunLogDrawer(QWidget):
         self.detail.setReadOnly(True)
         pl.addWidget(self.detail, 1)
 
+        # bottom-right controls: manual refresh, and set-the-runs-folder —
+        # same popup pattern as Deploy, just aimed at a different folder
+        controls = QVBoxLayout()
+        controls.setSpacing(6)
+        controls.addStretch()
+        self.refresh_btn = QPushButton("\u21bb Refresh")
+        self.refresh_btn.setToolTip("Reload the run list now")
+        self.refresh_btn.clicked.connect(self.refresh)
+        controls.addWidget(self.refresh_btn)
+        self.folder_btn = QPushButton("\U0001f4c1 Runs folder\u2026")
+        self.folder_btn.setToolTip("Point this list at the runner's runs/ folder")
+        self.folder_btn.clicked.connect(self._open_runs_folder_dialog)
+        controls.addWidget(self.folder_btn)
+        pl.addLayout(controls)
+
         # empty-state / not-configured-yet prompt, shown instead of the list
         self.empty = QWidget()
         el = QVBoxLayout(self.empty)
@@ -935,6 +950,16 @@ class RunLogDrawer(QWidget):
         el.addWidget(self.empty_status)
         el.addStretch()
         pl.addWidget(self.empty, 1)
+
+        # auto-refresh while the drawer is open, so it feels alive without
+        # having to touch anything — the manual Refresh button stays too,
+        # for the "yes it's working, look, it updated because I clicked it"
+        # feeling that people want even when it's already doing it for them
+        self._timer = None
+        from PyQt6.QtCore import QTimer
+        self._timer = QTimer(self)
+        self._timer.setInterval(4000)
+        self._timer.timeout.connect(self._auto_refresh)
 
         self._anim = QPropertyAnimation(self.panel, b"minimumHeight")
         self._anim.setDuration(180)
@@ -968,6 +993,15 @@ class RunLogDrawer(QWidget):
             a.stop(); a.setStartValue(self.panel.height()); a.setEndValue(target)
             a.start()
         if self._open:
+            self.refresh()
+            self._timer.start()      # keep it live while it's visible
+        else:
+            self._timer.stop()       # no point polling a closed drawer
+
+    def _auto_refresh(self):
+        # skip refreshing while someone's mid-edit of the folder path, so it
+        # doesn't yank the field out from under them
+        if not self.path_edit.hasFocus():
             self.refresh()
 
     def refresh(self):
@@ -1049,6 +1083,89 @@ class RunLogDrawer(QWidget):
                 if any(f.endswith(".json") for f in filenames):
                     best = dirpath
         return best
+
+    def _open_runs_folder_dialog(self):
+        """The bottom-right 'runs folder' button: same Scan / browse / type
+        popup as Deploy, but points runs_path at a runs/ folder directly
+        instead of deriving it from the deploy path."""
+        import os as _os
+        from storage import runs_path, set_runs_path
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Runner's runs/ folder")
+        dlg.setMinimumWidth(460)
+        lay = QVBoxLayout(dlg)
+
+        lay.addWidget(QLabel("Where the runner writes its run history:"))
+
+        row = QHBoxLayout()
+        path_edit = QLineEdit(runs_path())
+        path_edit.setPlaceholderText("/home/you/Deploy_DuGS/runs")
+        row.addWidget(path_edit, 1)
+        scan_btn = QPushButton("Scan")
+        row.addWidget(scan_btn)
+        browse_btn = QPushButton("\u2026")
+        browse_btn.setFixedWidth(32)
+        row.addWidget(browse_btn)
+        lay.addLayout(row)
+
+        status = QLabel("")
+        status.setStyleSheet("color:#888;font-family:monospace;font-size:11px;")
+        lay.addWidget(status)
+
+        def do_scan():
+            status.setText("scanning\u2026")
+            dlg.repaint()
+            found = self._scan_for_runs_folder()
+            if found:
+                path_edit.setText(found)
+                status.setText(f"found: {found}")
+            else:
+                status.setText("no runs/ folder found — type or browse to it")
+        scan_btn.clicked.connect(do_scan)
+
+        def do_browse():
+            folder = QFileDialog.getExistingDirectory(
+                dlg, "Point at the runner's runs/ folder", path_edit.text() or "")
+            if folder:
+                path_edit.setText(folder)
+        browse_btn.clicked.connect(do_browse)
+
+        complete = QPushButton("Use this folder")
+        complete.setStyleSheet(
+            f"QPushButton{{background:rgba(0,0,0,0.35);color:{self.accent};"
+            f"border:1px solid {self.accent};border-radius:4px;padding:6px 12px;"
+            f"font-family:monospace;}}")
+        lay.addWidget(complete)
+
+        def do_complete():
+            p = path_edit.text().strip()
+            if not p:
+                status.setText("enter a folder first (or Scan for it)")
+                return
+            _os.makedirs(p, exist_ok=True)   # runs/ may not exist yet
+            set_runs_path(p)
+            self.refresh()
+            dlg.accept()
+        complete.clicked.connect(do_complete)
+
+        dlg.exec()
+
+    def _scan_for_runs_folder(self):
+        """Same idea as the runner-folder scan, but looking for runs/ next to
+        dugs_runner.py instead of projects/."""
+        import os as _os
+        root = _os.path.expanduser("~")
+        for dirpath, dirnames, filenames in _os.walk(root):
+            depth = dirpath[len(root):].count(_os.sep)
+            if depth > 4:
+                dirnames[:] = []
+                continue
+            dirnames[:] = [d for d in dirnames
+                           if not d.startswith(".") and d != "node_modules"]
+            if "dugs_runner.py" in filenames:
+                return _os.path.join(dirpath, "runs")
+        return None
 
 
 class Home(QWidget):
