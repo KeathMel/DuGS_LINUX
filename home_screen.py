@@ -1136,6 +1136,16 @@ class Home(QWidget):
         self.run_log = RunLogDrawer(app, accent=btn_color)
         root.addWidget(self.run_log)
 
+        # one-time catch-up: if projects were deployed before this tracked
+        # registry existed (or the folder was touched by hand), make the
+        # registry match what's actually sitting in the runner's folder, so
+        # existing deploys don't silently lose their green name on upgrade
+        try:
+            from storage import sync_deployed_from_disk
+            sync_deployed_from_disk()
+        except Exception:
+            pass
+
         self.section = "project"
         self.apply_theme()
         self._load_node_meta()

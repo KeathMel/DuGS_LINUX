@@ -221,9 +221,31 @@ def list_deployed():
     return sorted(f[:-5] for f in os.listdir(p) if f.endswith(".json"))
 
 
+# ---- deployed-state registry ---------------------------------------------
+# is_deployed() used to re-derive the answer by checking the filesystem every
+# time (deploy_path() + does the file exist). That re-check could disagree
+# with what Deploy/Undeploy just did — different working directory, a stale
+# deploy_path, timing — so the button and the green name could drift out of
+# sync with each other and with reality.
+#
+# Now the editor's Deploy/Undeploy actions are the single source of truth:
+# they explicitly mark a project deployed or not, right here, at the moment
+# it happens. is_deployed() just reads that record — no re-derivation, so it
+# can't disagree with the button that changed it.
+def mark_deployed(name, deployed=True):
+    st = load_ui_state()
+    deployed_set = set(st.get("deployed_projects", []))
+    if deployed:
+        deployed_set.add(name)
+    else:
+        deployed_set.discard(name)
+    st["deployed_projects"] = sorted(deployed_set)
+    save_ui_state(st)
+
+
 def is_deployed(name):
-    p = deploy_path()
-    return bool(p) and os.path.isfile(os.path.join(p, f"{name}.json"))
+    st = load_ui_state()
+    return name in set(st.get("deployed_projects", []))
 
 
 def deploy_project(name):
@@ -239,6 +261,7 @@ def deploy_project(name):
     dest = os.path.join(p, f"{name}.json")
     with open(dest, "w") as f:
         json.dump(data, f, indent=2)
+    mark_deployed(name, True)
     return dest
 
 
@@ -246,11 +269,23 @@ def undeploy_project(name):
     """Remove a project from the runner's folder. The runner stops running it
     within a few seconds (its auto-reload notices the file is gone)."""
     p = deploy_path()
-    if not p:
-        return
-    dest = os.path.join(p, f"{name}.json")
-    if os.path.isfile(dest):
-        os.remove(dest)
+    if p:
+        dest = os.path.join(p, f"{name}.json")
+        if os.path.isfile(dest):
+            os.remove(dest)
+    mark_deployed(name, False)
+
+
+def sync_deployed_from_disk():
+    """One-time reconciliation: whatever is actually sitting in the runner's
+    folder becomes the tracked deployed set. Covers upgrading from the old
+    filesystem-check version, or the folder being edited by hand outside
+    the app."""
+    on_disk = set(list_deployed())
+    st = load_ui_state()
+    st["deployed_projects"] = sorted(on_disk)
+    save_ui_state(st)
+    return on_disk
 
 
 def export_project(name, dest_path):
