@@ -1087,7 +1087,18 @@ class RunLogDrawer(QWidget):
             self.detail.setPlainText("")
             return
         import json as _json
-        self.detail.setPlainText(_json.dumps(self._runs[row], indent=2))
+        text = _json.dumps(self._runs[row], indent=2)
+        # setPlainText always resets the scrollbar to the top, even when the
+        # text is identical to what's already shown -- which is exactly what
+        # happened on every auto-refresh tick while you were reading the same
+        # run's detail. Skip the write entirely when nothing actually changed.
+        if self.detail.toPlainText() == text:
+            return
+        pos = self.detail.verticalScrollBar().value()
+        self.detail.setPlainText(text)
+        # if it WAS a genuine change (the run's content updated) keep the
+        # reader's scroll position rather than snapping back to the top
+        self.detail.verticalScrollBar().setValue(pos)
 
     # ---- first-time setup, same pattern as the editor's Deploy dialog ----
     def _scan(self):
