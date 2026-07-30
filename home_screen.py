@@ -1054,7 +1054,14 @@ class RunLogDrawer(QWidget):
             self.path_edit.setText(p or "")
             return
 
-        # remember where we were before touching anything
+        # The left list refreshes; the right-hand detail pane does NOT --
+        # only clicking a run in the list loads its detail. Refreshing used
+        # to re-select a row to "restore" the selection, but setCurrentRow
+        # fires currentRowChanged -> _show_detail, which rewrote the detail
+        # pane (and reset ITS scroll) on every single refresh tick, even
+        # though nothing about the reader's selection actually changed.
+        # Simplest fix: block that signal while we repopulate the list, so
+        # a refresh only ever touches the list, never the detail pane.
         scroll_pos = self.list.verticalScrollBar().value()
         prev_runs = getattr(self, "_runs", [])
         cur_row = self.list.currentRow()
@@ -1062,6 +1069,7 @@ class RunLogDrawer(QWidget):
                          if 0 <= cur_row < len(prev_runs) else None)
 
         self._runs = list_runs()
+        self.list.blockSignals(True)
         self.list.clear()
         for r in self._runs:
             ok = r.get("error") is None
@@ -1070,6 +1078,7 @@ class RunLogDrawer(QWidget):
             self.list.addItem(label)
 
         if not self._runs:
+            self.list.blockSignals(False)
             self.detail.setPlainText("no runs yet")
             return
 
@@ -1081,6 +1090,7 @@ class RunLogDrawer(QWidget):
                     break
         self.list.setCurrentRow(new_row)
         self.list.verticalScrollBar().setValue(scroll_pos)
+        self.list.blockSignals(False)
 
     def _show_detail(self, row):
         if row < 0 or row >= len(getattr(self, "_runs", [])):
@@ -1088,16 +1098,11 @@ class RunLogDrawer(QWidget):
             return
         import json as _json
         text = _json.dumps(self._runs[row], indent=2)
-        # setPlainText always resets the scrollbar to the top, even when the
-        # text is identical to what's already shown -- which is exactly what
-        # happened on every auto-refresh tick while you were reading the same
-        # run's detail. Skip the write entirely when nothing actually changed.
-        if self.detail.toPlainText() == text:
-            return
+        # always save + restore scroll, unconditionally -- setPlainText resets
+        # it to the top on every call, so just put it back after, every time,
+        # rather than trying to detect "did the text really change"
         pos = self.detail.verticalScrollBar().value()
         self.detail.setPlainText(text)
-        # if it WAS a genuine change (the run's content updated) keep the
-        # reader's scroll position rather than snapping back to the top
         self.detail.verticalScrollBar().setValue(pos)
 
     # ---- first-time setup, same pattern as the editor's Deploy dialog ----
