@@ -352,3 +352,52 @@ def list_runs(limit=200):
             continue
     out.sort(key=lambda r: r.get("ran_at", ""), reverse=True)
     return out[:limit]
+
+
+# ---- run log auto-cleanup --------------------------------------------------
+# Old run files can pile up forever otherwise. Three settings: never, every
+# 24h, every 5h. Uses the same runs_path already set — nothing extra to
+# configure. The sweep only actually happens when a refresh notices a run it
+# hasn't seen before, so it's not running a background timer of its own.
+def run_cleanup_setting():
+    """'never' | '24h' | '5h'"""
+    return load_ui_state().get("run_cleanup", "never")
+
+
+def set_run_cleanup_setting(value):
+    if value not in ("never", "24h", "5h"):
+        value = "never"
+    st = load_ui_state()
+    st["run_cleanup"] = value
+    save_ui_state(st)
+
+
+def sweep_old_runs():
+    """Delete run files older than the configured window. No-op on 'never'.
+    Safe to call often — it's cheap and only does work when there's actually
+    something past the cutoff."""
+    setting = run_cleanup_setting()
+    if setting == "never":
+        return 0
+    hours = {"24h": 24, "5h": 5}.get(setting)
+    if hours is None:
+        return 0
+
+    p = runs_path()
+    if not p or not os.path.isdir(p):
+        return 0
+
+    cutoff = _time.time() - hours * 3600
+    removed = 0
+    for f in os.listdir(p):
+        if not f.endswith(".json"):
+            continue
+        fp = os.path.join(p, f)
+        try:
+            if os.path.getmtime(fp) < cutoff:
+                os.remove(fp)
+                removed += 1
+        except Exception:
+            continue
+    return removed
+

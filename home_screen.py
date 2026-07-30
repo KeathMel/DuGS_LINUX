@@ -902,6 +902,8 @@ class RunLogDrawer(QWidget):
         # left: translucent list of run timestamps
         self.list = QListWidget()
         self.list.setFixedWidth(240)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.list.currentRowChanged.connect(self._show_detail)
         pl.addWidget(self.list)
 
@@ -923,8 +925,8 @@ class RunLogDrawer(QWidget):
         detail_box.addWidget(self.detail, 1)
         pl.addLayout(detail_box, 1)
 
-        # bottom-right controls: manual refresh, and set-the-runs-folder —
-        # same popup pattern as Deploy, just aimed at a different folder
+        # bottom-right controls: manual refresh, set-the-runs-folder, and how
+        # long to keep old run files before they're auto-deleted
         controls = QVBoxLayout()
         controls.setSpacing(6)
         controls.addStretch()
@@ -936,6 +938,29 @@ class RunLogDrawer(QWidget):
         self.folder_btn.setToolTip("Point this list at the runner's runs/ folder")
         self.folder_btn.clicked.connect(self._open_runs_folder_dialog)
         controls.addWidget(self.folder_btn)
+
+        cleanup_row = QHBoxLayout()
+        cleanup_row.setSpacing(4)
+        cleanup_label = QLabel("Wipe older than:")
+        cleanup_label.setStyleSheet("color:#888;font-family:monospace;font-size:9px;")
+        cleanup_row.addWidget(cleanup_label)
+        controls.addLayout(cleanup_row)
+        from PyQt6.QtWidgets import QComboBox
+        self.cleanup_combo = QComboBox()
+        self.cleanup_combo.addItem("Never", "never")
+        self.cleanup_combo.addItem("Every 24 hours", "24h")
+        self.cleanup_combo.addItem("Every 5 hours", "5h")
+        try:
+            from storage import run_cleanup_setting
+            cur = run_cleanup_setting()
+            idx = self.cleanup_combo.findData(cur)
+            if idx >= 0:
+                self.cleanup_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        self.cleanup_combo.currentIndexChanged.connect(self._on_cleanup_changed)
+        controls.addWidget(self.cleanup_combo)
+
         pl.addLayout(controls)
 
         # empty-state / not-configured-yet prompt, shown instead of the list
@@ -1013,6 +1038,14 @@ class RunLogDrawer(QWidget):
         from PyQt6.QtCore import QTimer as _QTimer
         _QTimer.singleShot(1200, lambda: self.copy_btn.setText("\u29c9 Copy"))
 
+    def _on_cleanup_changed(self):
+        value = self.cleanup_combo.currentData()
+        try:
+            from storage import set_run_cleanup_setting
+            set_run_cleanup_setting(value)
+        except Exception:
+            pass
+
     def toggle(self):
         self._open = not self._open
         target = 220 if self._open else 0
@@ -1064,18 +1097,45 @@ class RunLogDrawer(QWidget):
         # a refresh only ever touches the list, never the detail pane.
         scroll_pos = self.list.verticalScrollBar().value()
         prev_runs = getattr(self, "_runs", [])
+        prev_files = {r.get("_file") for r in prev_runs}
         cur_row = self.list.currentRow()
         selected_file = (prev_runs[cur_row].get("_file")
                          if 0 <= cur_row < len(prev_runs) else None)
 
         self._runs = list_runs()
+
+        # only sweep when refresh actually found something it hadn't seen
+        # before -- not on every tick, and never at all when set to Never
+        # (sweep_old_runs() itself no-ops on 'never', this just avoids the
+        # pointless disk scan on every single auto-refresh)
+        new_files = {r.get("_file") for r in self._runs}
+        if new_files - prev_files:
+            try:
+                from storage import sweep_old_runs, run_cleanup_setting
+                if run_cleanup_setting() != "never":
+                    removed = sweep_old_runs()
+                    if removed:
+                        self._runs = list_runs()
+            except Exception:
+                pass
+
         self.list.blockSignals(True)
         self.list.clear()
         for r in self._runs:
             ok = r.get("error") is None
             mark = "\u2713" if ok else "\u2717"
-            label = f"{mark} {r.get('workflow','?'):16} {r.get('ran_at','')}"
+            # name and timestamp packed close together, no fixed-width
+            # padding forcing every row out to a name-that-never-happens
+            # length -- that's what was pushing the list into horizontal
+            # scroll. Timestamp trimmed to just the time; the date rarely
+            # matters at a glance and the tooltip has the full one anyway.
+            name = r.get("workflow", "?")
+            ts = r.get("ran_at", "")
+            time_only = ts.split("T")[1][:8] if "T" in ts else ts
+            label = f"{mark} {name} \u00b7 {time_only}"
             self.list.addItem(label)
+            self.list.item(self.list.count() - 1).setToolTip(
+                f"{name}\nran at {ts}")
 
         if not self._runs:
             self.list.blockSignals(False)
