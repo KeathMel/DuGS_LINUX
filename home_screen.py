@@ -193,8 +193,11 @@ class IconBrowser(QWidget):
     def _list_style(self):
         return (
             "QListWidget{background:transparent;border:none;}"
-            "QListWidget::item{color:#ddd;}"            
-            "QListWidget::item:selected{{color:{self.accent};background:rgba(255,255,255,0.10);border-radius:4px;}}"
+            # no color here on purpose — a stylesheet color rule beats
+            # setForeground() every time, which is exactly why deployed
+            # projects never turned green: this rule silently overwrote it.
+            # setForeground() in _add_item is the only thing setting colour now.
+            f"QListWidget::item:selected{{color:{self.accent};background:rgba(255,255,255,0.10);border-radius:4px;}}"
         )
 
     def set_accent(self, color):
@@ -240,6 +243,11 @@ class IconBrowser(QWidget):
         it.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         it.setSizeHint(QSize(96, 96))
         it.setData(Qt.ItemDataRole.UserRole, item_kind)   # remember what it is
+        # explicit default colour, now that the stylesheet no longer sets one
+        # (a stylesheet colour rule would silently beat any setForeground call
+        # below, which is exactly the bug that stopped deployed names from
+        # ever turning green)
+        it.setForeground(QColor("#ddd"))
         if item_kind == "servo":
             it.setForeground(QColor(SERVO_RED))
         # a deployed project (sitting in the runner's folder) shows GREEN, so
