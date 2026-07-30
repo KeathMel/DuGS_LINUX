@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QStackedWidget, QInputDialog, QMenu, QMessageBox, QLineEdit,
     QDialog, QColorDialog, QFileDialog, QSlider, QFrame, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve, pyqtProperty
 from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QIcon, QPixmap, QAction
 
 from home_preview import PreviewPane
@@ -320,19 +320,6 @@ class IconBrowser(QWidget):
         elif label == "Rename":
             if not names: return
             name = names[0]
-            # a deployed project can't be renamed — the copy in the runner's
-            # folder is keyed by name, so renaming here would orphan it
-            if self.kind == "project":
-                try:
-                    from storage import is_deployed
-                    if is_deployed(name):
-                        QMessageBox.information(
-                            self, "Can't rename",
-                            f"'{name}' is deployed. Undeploy it first "
-                            "(Deploy button in the editor), then rename.")
-                        return
-                except Exception:
-                    pass
             new, ok = QInputDialog.getText(self, "Rename", "New name:", text=name)
             if ok and new.strip() and new.strip() != name:
                 os.rename(_path(d, name), _path(d, new.strip())); self.refresh()
@@ -864,6 +851,198 @@ def paint_flat_or_image_bg(widget, event, settings, base_grey=GREY_BG):
     return True
 
 
+class RunLogDrawer(QWidget):
+    """The bottom pull-up panel showing the runner's run history.
+
+    Same idea as pulling a module panel open in the editor: a thin arrow tab
+    sits at the bottom of the screen, and pulling it up reveals the list —
+    every run the runner has done, most recent first, with a translucent
+    timestamp list on the left and the run's detail on the right.
+
+    If no runner folder is known yet, this offers the same Scan / browse /
+    type-a-path flow as the editor's Deploy dialog, so there's one consistent
+    way to point the app at a runner anywhere in the app.
+    """
+
+    def __init__(self, app, accent="#7ecfff"):
+        super().__init__()
+        self.app = app
+        self.accent = accent
+        self._open = False
+        self._h = 0
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # the tab you click/drag to open it
+        self.tab = QPushButton("\u25b2  Runs")
+        self.tab.setFixedHeight(22)
+        self.tab.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tab.clicked.connect(self.toggle)
+        outer.addWidget(self.tab)
+
+        # the panel itself, height animates open/shut
+        self.panel = QWidget()
+        self.panel.setFixedHeight(0)
+        outer.addWidget(self.panel)
+
+        pl = QHBoxLayout(self.panel)
+        pl.setContentsMargins(10, 10, 10, 10)
+        pl.setSpacing(10)
+
+        # left: translucent list of run timestamps
+        self.list = QListWidget()
+        self.list.setFixedWidth(240)
+        self.list.currentRowChanged.connect(self._show_detail)
+        pl.addWidget(self.list)
+
+        # right: the selected run's detail (input/result/error)
+        from PyQt6.QtWidgets import QTextEdit
+        self.detail = QTextEdit()
+        self.detail.setReadOnly(True)
+        pl.addWidget(self.detail, 1)
+
+        # empty-state / not-configured-yet prompt, shown instead of the list
+        self.empty = QWidget()
+        el = QVBoxLayout(self.empty)
+        el.addWidget(QLabel("No runner folder set yet."))
+        row = QHBoxLayout()
+        self.path_edit = QLineEdit()
+        self.path_edit.setPlaceholderText("/home/you/Deploy_DuGS/projects")
+        row.addWidget(self.path_edit, 1)
+        scan_btn = QPushButton("Scan")
+        scan_btn.clicked.connect(self._scan)
+        row.addWidget(scan_btn)
+        browse_btn = QPushButton("\u2026")
+        browse_btn.setFixedWidth(32)
+        browse_btn.clicked.connect(self._browse)
+        row.addWidget(browse_btn)
+        el.addLayout(row)
+        use_btn = QPushButton("Use this folder")
+        use_btn.clicked.connect(self._use_path)
+        el.addWidget(use_btn)
+        self.empty_status = QLabel("")
+        self.empty_status.setStyleSheet("color:#888;font-family:monospace;font-size:10px;")
+        el.addWidget(self.empty_status)
+        el.addStretch()
+        pl.addWidget(self.empty, 1)
+
+        self._anim = QPropertyAnimation(self.panel, b"minimumHeight")
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim2 = QPropertyAnimation(self.panel, b"maximumHeight")
+        anim2.setDuration(180)
+        anim2.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim2 = anim2
+
+        self.set_accent(accent)
+
+    def set_accent(self, accent):
+        self.accent = accent
+        self.tab.setStyleSheet(
+            f"QPushButton{{background:rgba(0,0,0,0.35);color:{accent};"
+            f"border:1px solid {accent};border-bottom:none;border-radius:0px;"
+            f"font-family:monospace;font-size:10px;}}"
+            f"QPushButton:hover{{background:rgba(255,255,255,0.10);}}")
+        self.panel.setStyleSheet(
+            "QWidget{background:rgba(0,0,0,0.55);}"
+            "QListWidget{background:rgba(255,255,255,0.05);color:#ccc;"
+            "font-family:monospace;font-size:11px;border:1px solid rgba(255,255,255,0.08);}"
+            "QTextEdit{background:rgba(0,0,0,0.25);color:#bbb;"
+            "font-family:monospace;font-size:11px;border:1px solid rgba(255,255,255,0.08);}")
+
+    def toggle(self):
+        self._open = not self._open
+        target = 220 if self._open else 0
+        self.tab.setText(("\u25bc" if self._open else "\u25b2") + "  Runs")
+        for a in (self._anim, self._anim2):
+            a.stop(); a.setStartValue(self.panel.height()); a.setEndValue(target)
+            a.start()
+        if self._open:
+            self.refresh()
+
+    def refresh(self):
+        """Reload the run list from the runner's runs/ folder."""
+        try:
+            from storage import runs_path, list_runs
+        except Exception:
+            return
+        p = runs_path()
+        has_folder = bool(p) and __import__("os").path.isdir(p)
+        self.list.setVisible(has_folder)
+        self.detail.setVisible(has_folder)
+        self.empty.setVisible(not has_folder)
+        if not has_folder:
+            self.path_edit.setText(p or "")
+            return
+
+        self._runs = list_runs()
+        self.list.clear()
+        for r in self._runs:
+            ok = r.get("error") is None
+            mark = "\u2713" if ok else "\u2717"
+            label = f"{mark} {r.get('workflow','?'):16} {r.get('ran_at','')}"
+            self.list.addItem(label)
+        if self._runs:
+            self.list.setCurrentRow(0)
+        else:
+            self.detail.setPlainText("no runs yet")
+
+    def _show_detail(self, row):
+        if row < 0 or row >= len(getattr(self, "_runs", [])):
+            self.detail.setPlainText("")
+            return
+        import json as _json
+        self.detail.setPlainText(_json.dumps(self._runs[row], indent=2))
+
+    # ---- first-time setup, same pattern as the editor's Deploy dialog ----
+    def _scan(self):
+        self.empty_status.setText("scanning\u2026")
+        found = self._scan_for_runner()
+        if found:
+            self.path_edit.setText(found)
+            self.empty_status.setText(f"found: {found}")
+        else:
+            self.empty_status.setText("no runner folder found — type or browse to it")
+
+    def _browse(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Point at the runner's projects folder", self.path_edit.text() or "")
+        if folder:
+            self.path_edit.setText(folder)
+
+    def _use_path(self):
+        p = self.path_edit.text().strip()
+        import os as _os
+        if not p or not _os.path.isdir(p):
+            self.empty_status.setText(f"not a folder: {p}")
+            return
+        from storage import set_deploy_path
+        set_deploy_path(p)
+        self.refresh()
+
+    def _scan_for_runner(self):
+        """Same signature scan as the editor: a projects/ folder sitting next
+        to dugs_runner.py, so we don't match a random 'projects' folder."""
+        import os as _os
+        root = _os.path.expanduser("~")
+        best = None
+        for dirpath, dirnames, filenames in _os.walk(root):
+            depth = dirpath[len(root):].count(_os.sep)
+            if depth > 4:
+                dirnames[:] = []
+                continue
+            dirnames[:] = [d for d in dirnames
+                           if not d.startswith(".") and d != "node_modules"]
+            if "dugs_runner.py" in filenames and "projects" in dirnames:
+                return _os.path.join(dirpath, "projects")
+            if _os.path.basename(dirpath) == "projects" and best is None:
+                if any(f.endswith(".json") for f in filenames):
+                    best = dirpath
+        return best
+
+
 class Home(QWidget):
     def __init__(self, app):
         super().__init__()
@@ -953,6 +1132,10 @@ class Home(QWidget):
         bottom_bar.addStretch()
         root.addLayout(bottom_bar)
 
+        # the run-history pull-up, at the very bottom of the screen
+        self.run_log = RunLogDrawer(app, accent=btn_color)
+        root.addWidget(self.run_log)
+
         self.section = "project"
         self.apply_theme()
         self._load_node_meta()
@@ -989,7 +1172,10 @@ class Home(QWidget):
             self.preview.show_project(None)
             return
         item = items[0]
-        name = item.text()        
+        # the item text IS the project name; UserRole holds the kind
+        # ("project"/"tabel"/"memory"), so reading UserRole here loaded a file
+        # literally called "project" and the preview came up empty
+        name = item.text()
         self.preview.show_project(name)
 
     def _load_node_meta(self):

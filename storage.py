@@ -260,3 +260,50 @@ def export_project(name, dest_path):
     with open(dest_path, "w") as f:
         json.dump(data, f, indent=2)
     return dest_path
+
+
+# ---- run log: the runner's history of every run it has done ---------------
+# The runner writes one file per run into its runs/ folder, sitting right next
+# to its projects/ folder — same idea as deploy. We remember the runner's
+# base folder once (same value as deploy_path, since runs/ and projects/ are
+# siblings inside it) and read whatever's in runs/.
+def runs_path():
+    """The runner's runs/ folder, derived from the deploy path (they're
+    siblings: <runner>/projects and <runner>/runs)."""
+    dp = deploy_path()
+    if not dp:
+        return ""
+    # deploy_path points AT the projects/ folder itself; runs/ is next to it
+    base = os.path.dirname(dp.rstrip("/\\"))
+    return os.path.join(base, "runs")
+
+
+def set_runs_path_from_base(base_folder):
+    """Point the deploy path at <base_folder>/projects, so runs_path() can
+    derive <base_folder>/runs from it. Used by the run-log scan/browse dialog
+    when the person points at the runner's root folder instead of projects/
+    directly."""
+    set_deploy_path(os.path.join(base_folder, "projects"))
+
+
+def list_runs(limit=200):
+    """Every run record, most recent first. Each is the parsed JSON the
+    runner wrote — workflow name, timestamp, duration, input, result, error."""
+    p = runs_path()
+    if not p or not os.path.isdir(p):
+        return []
+    files = sorted(
+        (f for f in os.listdir(p) if f.endswith(".json")),
+        reverse=True,   # filenames start with name__TIMESTAMP, so this isn't
+    )                    # perfectly chronological across workflows; re-sort below
+    out = []
+    for f in files[:limit * 2]:   # a little slack before trimming to `limit`
+        try:
+            with open(os.path.join(p, f)) as fh:
+                rec = json.load(fh)
+            rec["_file"] = f
+            out.append(rec)
+        except Exception:
+            continue
+    out.sort(key=lambda r: r.get("ran_at", ""), reverse=True)
+    return out[:limit]
