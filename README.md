@@ -67,9 +67,41 @@ on a Pi, a server, a phone — thats the runner:
 
 https://github.com/KeathMel/Deploy_DuGS
 
-Build here, hit **Deploy** in the top bar, give it the runners address, and it
-runs there on its own trigger from then on. No GUI on that side, nothing to
-copy by hand.
+Build here, hit **Deploy** in the top bar. First time, it asks for the
+runner's `projects/` folder — a Scan button hunts for it on disk, or point at
+it by hand. After that it's remembered.
+
+Deploy copies the workflow in, and if it uses a **Tabel** or a **Memory
+Bank**, those come with it — copied into `tabels/` and `memory_banks/` next
+to the runner's `projects/` folder, so the nodes actually have something to
+read on the other end. Two workflows sharing the same Tabel don't duplicate
+it. **Undeploy** removes the workflow, and cleans up its Tabel/Memory Bank
+data too — but only if nothing else still deployed needs it.
+
+**Download** does the same trick for taking a workflow somewhere by hand: one
+file with the workflow plus whatever Tabels/Memory Banks it uses, bundled in,
+ready to move to another machine.
+
+Once deployed, a project's name shows **green** on the home screen so you can
+see what's live at a glance. A deployed project can't be renamed — undeploy
+first.
+
+### Watching what the runner's done
+
+The home screen has a pull-up panel at the very bottom — **▲ Runs**. Opens to
+show every run the runner's done: timestamp, whether it errored, and the full
+input/result it worked with. Useful for exactly the thing you'd expect: a
+webhook fired from somewhere and you want to see precisely what arrived.
+
+The switch next to Copy flips between the raw JSON and a **node view** — the
+run drawn as a small graph, same as it'd look on the canvas, coloured by what
+happened: normal colour if a node produced output, red if it's part of a run
+that errored and never fired, grey if it never ran that pass at all.
+
+Nothing here refreshes on its own — hit **↻ Refresh**, or the **📁 Runs
+folder…** button if you need to point it at a different runner. There's also
+a "wipe older than" setting (Never / 24 hours / 5 hours) if the run history
+piles up.
 
 ---
 
