@@ -1242,13 +1242,25 @@ class RunLogDrawer(QWidget):
         selected_file = (prev_runs[cur_row].get("_file")
                          if 0 <= cur_row < len(prev_runs) else None)
 
-        self._runs = list_runs()
+        new_runs = list_runs()
+        new_files = {r.get("_file") for r in new_runs}
+
+        # Nothing new and nothing gone: the auto-refresh timer was firing
+        # every single tick regardless, rewriting the whole list widget even
+        # when it was identical to what was already shown -- which is what
+        # looked like "the whole thing keeps reloading". Now a no-op tick
+        # touches literally nothing: no clear(), no repaint, no risk of the
+        # selection or view ever appearing to reset.
+        if hasattr(self, "_runs") and new_files == prev_files:
+            self._runs = new_runs   # keep the data itself current either way
+            return
+
+        self._runs = new_runs
 
         # only sweep when refresh actually found something it hadn't seen
         # before -- not on every tick, and never at all when set to Never
         # (sweep_old_runs() itself no-ops on 'never', this just avoids the
         # pointless disk scan on every single auto-refresh)
-        new_files = {r.get("_file") for r in self._runs}
         if new_files - prev_files:
             try:
                 from storage import sweep_old_runs, run_cleanup_setting
