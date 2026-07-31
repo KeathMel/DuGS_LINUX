@@ -862,30 +862,24 @@ def paint_flat_or_image_bg(widget, event, settings, base_grey=GREY_BG):
 class RunCanvasView(QWidget):
     """The node-graph view of a run — same idea as the mini-canvas strip on
     the node popup, but built from a run record's saved layout instead of a
-    live canvas.
-
-    Each node draws at its saved position with its icon, a subtle gradient
-    fill, and a border colour that says what happened: the accent colour if
-    it produced output, red if it's part of a run that errored and never got
-    to fire, grey if it just never ran that pass. Under each node that ran,
-    its own duration shows in small text -- how long THAT node took before
-    the run moved on. AI nodes that spent tokens get an amber badge with the
-    count. Wires carry a small arrowhead so the flow direction is obvious at
-    a glance. A summary line up top totals the run's time and tokens.
+    live canvas. Each node draws at its saved position with its icon, wires
+    connect them, and the border colour says what happened: the accent
+    colour if it produced output, red if it's part of a run that errored and
+    never got to fire, grey if it just never ran that pass.
     """
 
     def __init__(self, accent="#7ecfff"):
         super().__init__()
         self.accent = accent
         self.record = None
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(140)
 
     def set_record(self, record):
         self.record = record
         self.update()
 
     def paintEvent(self, _):
-        from PyQt6.QtGui import QFont, QLinearGradient, QPainterPath
+        from PyQt6.QtGui import QFont
         from PyQt6.QtCore import QRectF, QPointF
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -893,10 +887,7 @@ class RunCanvasView(QWidget):
         # detail_stack ever failed to cleanly hide the JSON page underneath,
         # the old text would bleed through it. Solid fill rules that out
         # completely regardless of what else is going on.
-        bg = QLinearGradient(0, 0, 0, self.height())
-        bg.setColorAt(0, QColor(30, 30, 32))
-        bg.setColorAt(1, QColor(20, 20, 22))
-        p.fillRect(self.rect(), bg)
+        p.fillRect(self.rect(), QColor(24, 24, 24, 255))
         self.setAutoFillBackground(True)
 
         rec = self.record
@@ -917,23 +908,6 @@ class RunCanvasView(QWidget):
                        "no layout saved for this run")
             return
 
-        # ---- summary strip along the top: total time, total tokens ----
-        header_h = 18
-        total_ms = rec.get("duration_ms")
-        total_tokens = sum(s.get("tokens", 0) for s in status.values())
-        bits = []
-        if total_ms is not None:
-            bits.append(f"{total_ms:.0f}ms total")
-        if total_tokens:
-            bits.append(f"{total_tokens} tokens")
-        if bits:
-            f = QFont("monospace"); f.setPointSize(8)
-            p.setFont(f)
-            p.setPen(QColor("#888"))
-            p.drawText(QRectF(8, 2, self.width() - 16, header_h),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                       "   ·   ".join(bits))
-
         xs = [n.get("x", 0) for n in nodes]
         ys = [n.get("y", 0) for n in nodes]
         minx, maxx = min(xs), max(xs) + 90
@@ -943,10 +917,10 @@ class RunCanvasView(QWidget):
 
         pad = 14
         aw = self.width() - pad * 2
-        ah = self.height() - pad * 2 - header_h
+        ah = self.height() - pad * 2
         scale = min(aw / gw, ah / gh, 0.65)
         ox = pad + (aw - gw * scale) / 2
-        oy = pad + header_h + (ah - gh * scale) / 2
+        oy = pad + (ah - gh * scale) / 2
 
         def sx(x): return ox + (x - minx) * scale
         def sy(y): return oy + (y - miny) * scale
@@ -955,9 +929,8 @@ class RunCanvasView(QWidget):
         bw = max(10.0, 90 * scale)
         bh = max(8.0, 60 * scale)
 
-        # ---- wires, with a small arrowhead so direction is obvious ----
-        p.setPen(QPen(QColor(255, 255, 255, 55), 1.2))
-        p.setBrush(QBrush(QColor(255, 255, 255, 55)))
+        # wires first
+        p.setPen(QPen(QColor(255, 255, 255, 50), 1))
         for src, links in conns.items():
             a = by_name.get(src)
             if not a:
@@ -966,88 +939,48 @@ class RunCanvasView(QWidget):
                 b = by_name.get(link.get("to"))
                 if not b:
                     continue
-                p1 = QPointF(sx(a["x"]) + bw, sy(a["y"]) + bh / 2)
-                p2 = QPointF(sx(b["x"]), sy(b["y"]) + bh / 2)
-                p.drawLine(p1, p2)
-                # arrowhead just before the target block
-                ang_x = -6 if p2.x() >= p1.x() else 6
-                tip = QPointF(p2.x() - (2 if ang_x < 0 else -2), p2.y())
-                head = QPainterPath()
-                head.moveTo(tip)
-                head.lineTo(tip.x() + ang_x, tip.y() - 4)
-                head.lineTo(tip.x() + ang_x, tip.y() + 4)
-                head.closeSubpath()
-                p.drawPath(head)
+                p.drawLine(QPointF(sx(a["x"]) + bw, sy(a["y"]) + bh / 2),
+                           QPointF(sx(b["x"]), sy(b["y"]) + bh / 2))
 
         try:
             from canvas import node_pixmap
         except Exception:
             node_pixmap = None
 
-        f_small = QFont("monospace"); f_small.setPointSize(7)
-        f_badge = QFont("monospace"); f_badge.setPointSize(7); f_badge.setBold(True)
-
         for n in nodes:
             r = QRectF(sx(n["x"]), sy(n["y"]), bw, bh)
             name = n.get("name")
             st = status.get(name)
             if st is None:
-                edge = QColor(100, 100, 100)           # never reached this run
+                edge = QColor(110, 110, 110)          # never reached this run
             elif had_error and st.get("items_out", 0) == 0:
-                edge = QColor("#ff6b6b")                # ran, produced nothing, run errored
+                edge = QColor("#ff6b6b")               # ran, produced nothing, run errored
             else:
-                edge = QColor(self.accent)              # ran and produced output
-
-            # subtle gradient fill instead of a flat block -- reads less like
-            # a placeholder rectangle and more like an actual node
-            grad = QLinearGradient(r.topLeft(), r.bottomLeft())
-            grad.setColorAt(0, QColor(48, 48, 52))
-            grad.setColorAt(1, QColor(26, 26, 30))
-            p.setBrush(QBrush(grad))
+                edge = QColor(self.accent)             # ran and produced output
+            p.setBrush(QBrush(QColor(0, 0, 0, 150)))
             p.setPen(QPen(edge, 2 if st else 1))
-            p.drawRoundedRect(r, 5, 5)
+            p.drawRoundedRect(r, 4, 4)
 
             if node_pixmap is not None:
                 try:
-                    pm = node_pixmap(n.get("type", ""), int(min(bw, bh) * 0.55))
+                    pm = node_pixmap(n.get("type", ""), int(min(bw, bh) * 0.6))
                     if pm is not None and not pm.isNull():
                         p.drawPixmap(int(r.center().x() - pm.width() / 2),
-                                    int(r.center().y() - pm.height() / 2 - 3), pm)
+                                    int(r.center().y() - pm.height() / 2), pm)
                 except Exception:
                     pass
 
-            # item-count badge, bottom-right
             if st and st.get("items_out", 0) > 1:
                 txt = str(st["items_out"])
-                p.setFont(f_badge)
+                f = QFont("monospace"); f.setPointSize(7); f.setBold(True)
+                p.setFont(f)
+                p.setPen(QColor("#fff"))
                 badge = QRectF(r.right() - 16, r.bottom() - 13, 15, 12)
-                p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor(0, 0, 0, 190))
+                p.setPen(Qt.PenStyle.NoPen)
                 p.drawRoundedRect(badge, 3, 3)
                 p.setPen(edge)
                 p.drawText(badge, Qt.AlignmentFlag.AlignCenter, txt)
-
-            # token badge, top-right, amber so it reads as "cost" rather
-            # than "output" -- distinct from the item-count badge below it
-            if st and st.get("tokens"):
-                txt = f"{st['tokens']}"
-                p.setFont(f_badge)
-                fm_w = 8 + len(txt) * 5
-                badge = QRectF(r.right() - fm_w, r.top() - 6, fm_w, 12)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor(40, 30, 0, 220))
-                p.drawRoundedRect(badge, 3, 3)
-                p.setPen(QColor("#e0b84c"))
-                p.drawText(badge, Qt.AlignmentFlag.AlignCenter, txt)
-
-            # this node's own duration -- how long it took before the run
-            # moved on to whatever's next
-            if st and st.get("ms") is not None and bh > 16:
-                p.setFont(f_small)
-                p.setPen(QColor("#888"))
-                dur = f"{st['ms']:.0f}ms" if st["ms"] < 1000 else f"{st['ms']/1000:.1f}s"
-                p.drawText(QRectF(r.left(), r.bottom() + 1, bw, 11),
-                          Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, dur)
 
 
 class RunLogDrawer(QWidget):
