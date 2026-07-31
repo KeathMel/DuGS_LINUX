@@ -982,6 +982,16 @@ class RunCanvasView(QWidget):
                 p.setPen(edge)
                 p.drawText(badge, Qt.AlignmentFlag.AlignCenter, txt)
 
+            # this node's own duration -- how long it took before the run
+            # moved on to whatever's next. Only piece added this round.
+            if st and st.get("ms") is not None and bh > 16:
+                fdur = QFont("monospace"); fdur.setPointSize(7)
+                p.setFont(fdur)
+                p.setPen(QColor("#888"))
+                dur = f"{st['ms']:.0f}ms" if st["ms"] < 1000 else f"{st['ms']/1000:.1f}s"
+                p.drawText(QRectF(r.left(), r.bottom() + 1, bw, 11),
+                          Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, dur)
+
 
 class RunLogDrawer(QWidget):
     """The bottom pull-up panel showing the runner's run history.
