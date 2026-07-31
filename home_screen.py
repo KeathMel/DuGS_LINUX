@@ -883,7 +883,12 @@ class RunCanvasView(QWidget):
         from PyQt6.QtCore import QRectF, QPointF
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), QColor(0, 0, 0, 70))
+        # fully opaque, on purpose -- if this were translucent and the
+        # detail_stack ever failed to cleanly hide the JSON page underneath,
+        # the old text would bleed through it. Solid fill rules that out
+        # completely regardless of what else is going on.
+        p.fillRect(self.rect(), QColor(24, 24, 24, 255))
+        self.setAutoFillBackground(True)
 
         rec = self.record
         if not rec:
@@ -1121,16 +1126,6 @@ class RunLogDrawer(QWidget):
         el.addStretch()
         pl.addWidget(self.empty, 1)
 
-        # auto-refresh while the drawer is open, so it feels alive without
-        # having to touch anything — the manual Refresh button stays too,
-        # for the "yes it's working, look, it updated because I clicked it"
-        # feeling that people want even when it's already doing it for them
-        self._timer = None
-        from PyQt6.QtCore import QTimer
-        self._timer = QTimer(self)
-        self._timer.setInterval(4000)
-        self._timer.timeout.connect(self._auto_refresh)
-
         self._anim = QPropertyAnimation(self.panel, b"minimumHeight")
         self._anim.setDuration(180)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -1190,20 +1185,11 @@ class RunLogDrawer(QWidget):
             a.start()
         if self._open:
             self.refresh()
-            # refresh blocks the list's signal while repopulating (on purpose,
-            # so an auto-refresh tick never touches the detail pane) -- which
-            # also means opening the drawer for the first time selects a row
-            # but never loads it. One explicit call here covers that.
             self._show_detail(self.list.currentRow())
-            self._timer.start()      # keep it live while it's visible
-        else:
-            self._timer.stop()       # no point polling a closed drawer
-
-    def _auto_refresh(self):
-        # skip refreshing while someone's mid-edit of the folder path, so it
-        # doesn't yank the field out from under them
-        if not self.path_edit.hasFocus():
-            self.refresh()
+        # no timer here on purpose -- refresh only happens when the drawer
+        # opens or the Refresh button is clicked. It was auto-polling every
+        # 4s regardless of whether anything changed, which is what kept
+        # making the list/detail look like they were resetting.
 
     def refresh(self):
         """Reload the run list from the runner's runs/ folder.
