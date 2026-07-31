@@ -248,10 +248,54 @@ def is_deployed(name):
     return name in set(st.get("deployed_projects", []))
 
 
+# ---- data dependencies: a workflow needing a Tabel or Memory Bank --------
+# Tabels and memory banks are just local files, so a workflow that reads one
+# works in the app (the file's right there) and comes up empty on the runner
+# (it never had a copy). No manifest to track and keep in sync -- dependencies
+# are derived by scanning the workflow itself, on demand, every time. If two
+# workflows need the same tabel, "is it still needed" is answered the same
+# way: scan whoever else is still deployed.
+def _node_dependencies(nodes):
+    """(tabel names, memory bank names) referenced by a list of node specs."""
+    tabels, banks = set(), set()
+    for n in nodes or []:
+        t = n.get("type", "")
+        params = n.get("params") or {}
+        if t == "data.tabel":
+            name = params.get("tabel")
+            if name:
+                tabels.add(name)
+        elif t in ("memory.read", "memory.write"):
+            name = params.get("bank")
+            if name:
+                banks.add(name)
+    return tabels, banks
+
+
+def project_dependencies(name):
+    """The tabels/memory banks a saved project's nodes reference."""
+    try:
+        wf = load_project(name)
+    except Exception:
+        return set(), set()
+    return _node_dependencies(wf.get("nodes", []))
+
+
+def _deploy_base():
+    """The runner's root folder, derived from deploy_path() the same way
+    runs_path() derives its sibling -- deploy_path() points AT projects/
+    itself."""
+    p = deploy_path()
+    if not p:
+        return ""
+    return os.path.dirname(p.rstrip("/\\"))
+
+
 def deploy_project(name):
-    """Copy a saved project into the runner's folder. Returns the path written.
-    Raises if no deploy path is set or it doesn't exist, so the caller can ask
-    the person to point at the folder."""
+    """Copy a saved project into the runner's folder, along with whatever
+    Tabels or Memory Banks its nodes actually use -- those land in tabels/
+    and memory_banks/ next to projects/, so the runner's copy of storage.py
+    (same file, same relative layout) finds them without any code change."""
     p = deploy_path()
     if not p:
         raise RuntimeError("no deploy folder set")
@@ -261,19 +305,79 @@ def deploy_project(name):
     dest = os.path.join(p, f"{name}.json")
     with open(dest, "w") as f:
         json.dump(data, f, indent=2)
+
+    base = _deploy_base()
+    tabels, banks = _node_dependencies(data.get("nodes", []))
+    if tabels:
+        tdir = os.path.join(base, "tabels")
+        os.makedirs(tdir, exist_ok=True)
+        for t in tabels:
+            try:
+                with open(os.path.join(tdir, f"{t}.json"), "w") as f:
+                    json.dump(load_tabel(t), f, indent=2)
+            except Exception:
+                pass   # tabel doesn't exist locally -- nothing to send
+    if banks:
+        bdir = os.path.join(base, "memory_banks")
+        os.makedirs(bdir, exist_ok=True)
+        for b in banks:
+            try:
+                with open(os.path.join(bdir, f"{b}.json"), "w") as f:
+                    json.dump(load_memory_bank(b), f, indent=2)
+            except Exception:
+                pass
+
     mark_deployed(name, True)
     return dest
 
 
 def undeploy_project(name):
-    """Remove a project from the runner's folder. The runner stops running it
-    within a few seconds (its auto-reload notices the file is gone)."""
+    """Remove a project from the runner's folder. Also removes any Tabel or
+    Memory Bank it needed there -- but only if nothing ELSE currently
+    deployed still depends on it. Checked by scanning every other deployed
+    project's own dependencies, not a separate tracked list, so there's
+    nothing extra that can drift out of sync."""
     p = deploy_path()
-    if p:
-        dest = os.path.join(p, f"{name}.json")
-        if os.path.isfile(dest):
-            os.remove(dest)
+    if not p:
+        mark_deployed(name, False)
+        return
+
+    my_tabels, my_banks = set(), set()
+    dest = os.path.join(p, f"{name}.json")
+    if os.path.isfile(dest):
+        try:
+            with open(dest) as f:
+                my_tabels, my_banks = _node_dependencies(json.load(f).get("nodes", []))
+        except Exception:
+            pass
+        os.remove(dest)
     mark_deployed(name, False)
+
+    if not (my_tabels or my_banks):
+        return
+
+    # what does everyone ELSE still deployed still need?
+    still_needed_tabels, still_needed_banks = set(), set()
+    for other in list_deployed():
+        if other == name:
+            continue
+        try:
+            with open(os.path.join(p, f"{other}.json")) as f:
+                t, b = _node_dependencies(json.load(f).get("nodes", []))
+            still_needed_tabels |= t
+            still_needed_banks |= b
+        except Exception:
+            continue
+
+    base = _deploy_base()
+    for t in my_tabels - still_needed_tabels:
+        fp = os.path.join(base, "tabels", f"{t}.json")
+        if os.path.isfile(fp):
+            os.remove(fp)
+    for b in my_banks - still_needed_banks:
+        fp = os.path.join(base, "memory_banks", f"{b}.json")
+        if os.path.isfile(fp):
+            os.remove(fp)
 
 
 def sync_deployed_from_disk():
@@ -289,11 +393,29 @@ def sync_deployed_from_disk():
 
 
 def export_project(name, dest_path):
-    """Write a project's JSON to any path the person chose (the Download
-    button), so they can move a workflow to another machine by hand."""
-    data = load_project(name)
+    """Write a project as one self-contained file the person can move to any
+    machine by hand -- the workflow itself, plus whatever Tabels and Memory
+    Banks its nodes use, bundled in. Not a plain drop-into-projects/ file
+    (that's what Deploy is for) -- this is the portable, share-anywhere one."""
+    wf = load_project(name)
+    tabels, banks = _node_dependencies(wf.get("nodes", []))
+    bundle = {
+        "workflow": wf,
+        "tabels": {},
+        "memory_banks": {},
+    }
+    for t in tabels:
+        try:
+            bundle["tabels"][t] = load_tabel(t)
+        except Exception:
+            pass
+    for b in banks:
+        try:
+            bundle["memory_banks"][b] = load_memory_bank(b)
+        except Exception:
+            pass
     with open(dest_path, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(bundle, f, indent=2)
     return dest_path
 
 
