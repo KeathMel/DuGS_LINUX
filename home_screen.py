@@ -859,6 +859,125 @@ def paint_flat_or_image_bg(widget, event, settings, base_grey=GREY_BG):
     return True
 
 
+class RunCanvasView(QWidget):
+    """The node-graph view of a run — same idea as the mini-canvas strip on
+    the node popup, but built from a run record's saved layout instead of a
+    live canvas. Each node draws at its saved position with its icon, wires
+    connect them, and the border colour says what happened: the accent
+    colour if it produced output, red if it's part of a run that errored and
+    never got to fire, grey if it just never ran that pass.
+    """
+
+    def __init__(self, accent="#7ecfff"):
+        super().__init__()
+        self.accent = accent
+        self.record = None
+        self.setMinimumHeight(140)
+
+    def set_record(self, record):
+        self.record = record
+        self.update()
+
+    def paintEvent(self, _):
+        from PyQt6.QtGui import QFont
+        from PyQt6.QtCore import QRectF, QPointF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 70))
+
+        rec = self.record
+        if not rec:
+            p.setPen(QColor("#777"))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "select a run")
+            return
+
+        layout = rec.get("layout") or {}
+        nodes = layout.get("nodes") or []
+        conns = layout.get("connections") or {}
+        status = rec.get("node_status") or {}
+        had_error = bool(rec.get("error"))
+
+        if not nodes:
+            p.setPen(QColor("#777"))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                       "no layout saved for this run")
+            return
+
+        xs = [n.get("x", 0) for n in nodes]
+        ys = [n.get("y", 0) for n in nodes]
+        minx, maxx = min(xs), max(xs) + 90
+        miny, maxy = min(ys), max(ys) + 60
+        gw = max(1.0, maxx - minx)
+        gh = max(1.0, maxy - miny)
+
+        pad = 14
+        aw = self.width() - pad * 2
+        ah = self.height() - pad * 2
+        scale = min(aw / gw, ah / gh, 0.65)
+        ox = pad + (aw - gw * scale) / 2
+        oy = pad + (ah - gh * scale) / 2
+
+        def sx(x): return ox + (x - minx) * scale
+        def sy(y): return oy + (y - miny) * scale
+
+        by_name = {n.get("name"): n for n in nodes}
+        bw = max(10.0, 90 * scale)
+        bh = max(8.0, 60 * scale)
+
+        # wires first
+        p.setPen(QPen(QColor(255, 255, 255, 50), 1))
+        for src, links in conns.items():
+            a = by_name.get(src)
+            if not a:
+                continue
+            for link in (links or []):
+                b = by_name.get(link.get("to"))
+                if not b:
+                    continue
+                p.drawLine(QPointF(sx(a["x"]) + bw, sy(a["y"]) + bh / 2),
+                           QPointF(sx(b["x"]), sy(b["y"]) + bh / 2))
+
+        try:
+            from canvas import node_pixmap
+        except Exception:
+            node_pixmap = None
+
+        for n in nodes:
+            r = QRectF(sx(n["x"]), sy(n["y"]), bw, bh)
+            name = n.get("name")
+            st = status.get(name)
+            if st is None:
+                edge = QColor(110, 110, 110)          # never reached this run
+            elif had_error and st.get("items_out", 0) == 0:
+                edge = QColor("#ff6b6b")               # ran, produced nothing, run errored
+            else:
+                edge = QColor(self.accent)             # ran and produced output
+            p.setBrush(QBrush(QColor(0, 0, 0, 150)))
+            p.setPen(QPen(edge, 2 if st else 1))
+            p.drawRoundedRect(r, 4, 4)
+
+            if node_pixmap is not None:
+                try:
+                    pm = node_pixmap(n.get("type", ""), int(min(bw, bh) * 0.6))
+                    if pm is not None and not pm.isNull():
+                        p.drawPixmap(int(r.center().x() - pm.width() / 2),
+                                    int(r.center().y() - pm.height() / 2), pm)
+                except Exception:
+                    pass
+
+            if st and st.get("items_out", 0) > 1:
+                txt = str(st["items_out"])
+                f = QFont("monospace"); f.setPointSize(7); f.setBold(True)
+                p.setFont(f)
+                p.setPen(QColor("#fff"))
+                badge = QRectF(r.right() - 16, r.bottom() - 13, 15, 12)
+                p.setBrush(QColor(0, 0, 0, 190))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawRoundedRect(badge, 3, 3)
+                p.setPen(edge)
+                p.drawText(badge, Qt.AlignmentFlag.AlignCenter, txt)
+
+
 class RunLogDrawer(QWidget):
     """The bottom pull-up panel showing the runner's run history.
 
@@ -907,22 +1026,36 @@ class RunLogDrawer(QWidget):
         self.list.currentRowChanged.connect(self._show_detail)
         pl.addWidget(self.list)
 
-        # right: the selected run's detail (input/result/error), with a copy
-        # button top-right so you can grab a run's data without selecting text
-        from PyQt6.QtWidgets import QTextEdit
+        # right: the selected run's detail, either as raw JSON or as a mini
+        # node canvas — the switch flips between them, copy always grabs the
+        # underlying JSON regardless of which view is showing
+        from PyQt6.QtWidgets import QTextEdit, QStackedWidget
         detail_box = QVBoxLayout()
         detail_box.setSpacing(4)
         detail_header = QHBoxLayout()
         detail_header.addStretch()
+        view_label = QLabel("Canvas view")
+        view_label.setStyleSheet("color:#888;font-family:monospace;font-size:9px;")
+        detail_header.addWidget(view_label)
+        self.view_switch = ToggleSwitch(checked=False)
+        self.view_switch.setFixedSize(40, 20)
+        self.view_switch.setToolTip("Switch between raw JSON and the node canvas")
+        self.view_switch.toggled.connect(self._on_view_toggle)
+        detail_header.addWidget(self.view_switch)
         self.copy_btn = QPushButton("\u29c9 Copy")
         self.copy_btn.setFixedHeight(22)
         self.copy_btn.setToolTip("Copy this run's full record to the clipboard")
         self.copy_btn.clicked.connect(self._copy_detail)
         detail_header.addWidget(self.copy_btn)
         detail_box.addLayout(detail_header)
+
+        self.detail_stack = QStackedWidget()
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
-        detail_box.addWidget(self.detail, 1)
+        self.detail_stack.addWidget(self.detail)          # index 0: JSON
+        self.canvas_view = RunCanvasView(accent)
+        self.detail_stack.addWidget(self.canvas_view)      # index 1: canvas
+        detail_box.addWidget(self.detail_stack, 1)
         pl.addLayout(detail_box, 1)
 
         # bottom-right controls: manual refresh, set-the-runs-folder, and how
@@ -1026,6 +1159,8 @@ class RunLogDrawer(QWidget):
             f"border:1px solid {accent};border-radius:4px;font-size:10px;"
             f"font-family:monospace;padding:2px 8px;}}"
             f"QPushButton:hover{{background:rgba(255,255,255,0.12);}}")
+        self.canvas_view.accent = accent
+        self.canvas_view.update()
 
     def _copy_detail(self):
         """Copy the currently shown run's full record to the clipboard."""
@@ -1055,6 +1190,11 @@ class RunLogDrawer(QWidget):
             a.start()
         if self._open:
             self.refresh()
+            # refresh blocks the list's signal while repopulating (on purpose,
+            # so an auto-refresh tick never touches the detail pane) -- which
+            # also means opening the drawer for the first time selects a row
+            # but never loads it. One explicit call here covers that.
+            self._show_detail(self.list.currentRow())
             self._timer.start()      # keep it live while it's visible
         else:
             self._timer.stop()       # no point polling a closed drawer
@@ -1155,15 +1295,21 @@ class RunLogDrawer(QWidget):
     def _show_detail(self, row):
         if row < 0 or row >= len(getattr(self, "_runs", [])):
             self.detail.setPlainText("")
+            self.canvas_view.set_record(None)
             return
         import json as _json
-        text = _json.dumps(self._runs[row], indent=2)
+        rec = self._runs[row]
+        text = _json.dumps(rec, indent=2)
         # always save + restore scroll, unconditionally -- setPlainText resets
         # it to the top on every call, so just put it back after, every time,
         # rather than trying to detect "did the text really change"
         pos = self.detail.verticalScrollBar().value()
         self.detail.setPlainText(text)
         self.detail.verticalScrollBar().setValue(pos)
+        self.canvas_view.set_record(rec)
+
+    def _on_view_toggle(self, checked):
+        self.detail_stack.setCurrentIndex(1 if checked else 0)
 
     # ---- first-time setup, same pattern as the editor's Deploy dialog ----
     def _scan(self):
