@@ -23,8 +23,9 @@ from PyQt6.QtCore import Qt
 
 from theme import STYLESHEET
 from storage import PROJECTS_DIR, TABELS_DIR, _ensure
-from home_screen import Home, MemoryBankViewer
+from home_screen import Home
 from tabel_editor import TabelEditor
+from memory_viewer import MemoryBankViewer
 from editor import Editor
 
 
