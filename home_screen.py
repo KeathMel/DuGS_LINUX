@@ -364,8 +364,15 @@ class IconBrowser(QWidget):
             if hasattr(self.app, "open_memory"):
                 self.app.open_memory(name)
             else:
-                dlg = MemoryBankViewer(self, name, accent=self.accent)
-                dlg.exec()
+                # keep a reference on self, or Python garbage-collects this
+                # the instant open() returns and the window vanishes before
+                # it's even painted -- a non-modal window has no .exec() to
+                # hold the call open the way a dialog would
+                if not hasattr(self, "_memory_windows"):
+                    self._memory_windows = []
+                win = MemoryBankViewer(name, accent=self.accent)
+                self._memory_windows.append(win)
+                win.show()
         else: self.app.open_tabel(name)
 
 
@@ -492,17 +499,23 @@ class ToggleSwitch(QPushButton):
             )
 
 
-class MemoryBankViewer(QDialog):
-    """A look inside one Memory Bank — every entry it holds, its most recent
-    write shown up top so you can see at a glance what's freshest, and the
-    full list underneath so you can find anything else. Sorted oldest-first
-    by default, with a switch to flip it newest-first."""
+class MemoryBankViewer(QWidget):
+    """A look inside one Memory Bank — its own window, not a popup, same as
+    opening a Tabel opens its own editor rather than a dialog you have to
+    dismiss before doing anything else. Every entry it holds, its most
+    recent write shown up top so you can see at a glance what's freshest,
+    and the full list underneath. Sorted oldest-first by default, with a
+    switch to flip it newest-first."""
 
-    def __init__(self, parent, bank_name, accent="#7ecfff"):
-        super().__init__(parent)
+    def __init__(self, bank_name, accent="#7ecfff"):
+        super().__init__()
         self.bank_name = bank_name
         self.accent = accent
         self.setWindowTitle(f"Memory Bank — {bank_name}")
+        # a REAL independent window: its own taskbar entry, resizable,
+        # closable on its own, stays open alongside the home screen instead
+        # of blocking it the way a modal dialog would
+        self.setWindowFlags(Qt.WindowType.Window)
         self.resize(640, 480)
 
         root = QVBoxLayout(self)
@@ -558,7 +571,7 @@ class MemoryBankViewer(QDialog):
         root.addWidget(self.list, 1)
 
         close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
+        close_btn.clicked.connect(self.close)
         root.addWidget(close_btn)
 
         self._reload()
