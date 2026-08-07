@@ -210,6 +210,7 @@ class Canvas(QWidget):
         self.dragging = None; self.drag_off = QPointF()
         self.wire_from = None; self.selected = None; self.selected_conn = None
         self.selected_nodes = set()      # multi-selection for mass move
+        self._clipboard = None           # copied node(s) + their internal wiring
         # workflow appearance (background image / dot grid) from the settings popup
         self.ui_settings = {}
         self._bg_pixmap = None
@@ -337,6 +338,63 @@ class Canvas(QWidget):
         elif self.selected_conn is not None:
             del self.connections[self.selected_conn]; self.selected_conn = None
         self.editor.mark_changed(); self.update()
+
+    def copy_selected(self):
+        """Copy whatever's selected — one node or a whole multi-selection —
+        onto an internal clipboard. Only wiring BETWEEN copied nodes comes
+        along; a wire to something outside the selection wouldn't make sense
+        to paste (the other end isn't being copied), so it's dropped."""
+        targets = set(self.selected_nodes) if len(self.selected_nodes) > 1 else (
+            {self.selected} if self.selected is not None else set())
+        if not targets:
+            return
+        node_data = [{
+            "type_id": n.type_id, "title": n.title,
+            "inputs": n.inputs, "outputs": n.outputs,
+            "name": n.name, "x": n.x, "y": n.y,
+            "params": dict(n.params), "category": n.category,
+        } for n in targets]
+        # remember wiring purely by index into node_data, so paste can
+        # rebuild it against the brand-new node objects it creates
+        by_node = {n: i for i, n in enumerate(targets)}
+        wires = [(by_node[src], out_i, by_node[dst], in_i)
+                for (src, out_i, dst, in_i) in self.connections
+                if src in targets and dst in targets]
+        self._clipboard = {"nodes": node_data, "wires": wires}
+
+    def paste(self):
+        """Paste the clipboard back onto the canvas, offset so it doesn't
+        land exactly on top of what was copied, with fresh unique names and
+        the internal wiring intact."""
+        cb = self._clipboard
+        if not cb or not cb["nodes"]:
+            return
+        offset = 30
+        new_nodes = []
+        existing_names = {n.name for n in self.nodes}
+        for nd in cb["nodes"]:
+            base_name = nd["name"]
+            name = base_name
+            i = 1
+            while name in existing_names:
+                i += 1
+                name = f"{base_name} ({i})"
+            existing_names.add(name)
+            n = CanvasNode(nd["type_id"], nd["title"], nd["inputs"], nd["outputs"],
+                          nd["x"] + offset, nd["y"] + offset, name=name,
+                          params=dict(nd["params"]), category=nd["category"])
+            new_nodes.append(n)
+        for src_i, out_i, dst_i, in_i in cb["wires"]:
+            self.connections.append((new_nodes[src_i], out_i, new_nodes[dst_i], in_i))
+        self.nodes.extend(new_nodes)
+        # select the pasted set, so it's obvious what just landed and it's
+        # ready to drag into place immediately
+        self.selected_nodes = set(new_nodes)
+        self.selected = new_nodes[0] if len(new_nodes) == 1 else None
+        if self.selected is not None:
+            self.editor.show_node_settings(self.selected)
+        self.editor.mark_changed()
+        self.update()
 
     def mouseDoubleClickEvent(self, e):
         wpos = self.world(QPointF(e.position()))

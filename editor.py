@@ -192,6 +192,8 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         QShortcut(QKeySequence("Delete"), self, lambda: self.canvas.delete_selected())
         QShortcut(QKeySequence("Ctrl+Z"), self, self.undo)
         QShortcut(QKeySequence("Ctrl+Y"), self, self.redo)
+        QShortcut(QKeySequence("Ctrl+C"), self, lambda: self.canvas.copy_selected())
+        QShortcut(QKeySequence("Ctrl+V"), self, lambda: self.canvas.paste())
 
         # listen for webhook-triggered runs so the canvas lights up live
         self._evt_listener = EventListener()
