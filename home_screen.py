@@ -358,21 +358,7 @@ class IconBrowser(QWidget):
     def open(self, name):
         k = self._kind_of(name)
         if k == "project": self.app.open_project(name)
-        elif k == "memory":
-            # a full bank editor is optional; if the app doesn't provide one,
-            # fall back to the built-in viewer so banks are always browsable
-            if hasattr(self.app, "open_memory"):
-                self.app.open_memory(name)
-            else:
-                # keep a reference on self, or Python garbage-collects this
-                # the instant open() returns and the window vanishes before
-                # it's even painted -- a non-modal window has no .exec() to
-                # hold the call open the way a dialog would
-                if not hasattr(self, "_memory_windows"):
-                    self._memory_windows = []
-                win = MemoryBankViewer(name, accent=self.accent)
-                self._memory_windows.append(win)
-                win.show()
+        elif k == "memory": self.app.open_memory(name)
         else: self.app.open_tabel(name)
 
 
@@ -500,33 +486,33 @@ class ToggleSwitch(QPushButton):
 
 
 class MemoryBankViewer(QWidget):
-    """A look inside one Memory Bank — its own window, not a popup, same as
-    opening a Tabel opens its own editor rather than a dialog you have to
-    dismiss before doing anything else. Every entry it holds, its most
-    recent write shown up top so you can see at a glance what's freshest,
-    and the full list underneath. Sorted oldest-first by default, with a
-    switch to flip it newest-first."""
+    """A page in the app, same as Home / Editor / TabelEditor — added to the
+    main window's stack once, then swapped in and out. Every entry a Memory
+    Bank holds, its most recent write shown up top so you can see at a
+    glance what's freshest, and the full list underneath. Sorted
+    oldest-first by default, with a switch to flip it newest-first."""
 
-    def __init__(self, bank_name, accent="#7ecfff"):
+    def __init__(self, app):
         super().__init__()
-        self.bank_name = bank_name
-        self.accent = accent
-        self.setWindowTitle(f"Memory Bank — {bank_name}")
-        # a REAL independent window: its own taskbar entry, resizable,
-        # closable on its own, stays open alongside the home screen instead
-        # of blocking it the way a modal dialog would
-        self.setWindowFlags(Qt.WindowType.Window)
-        self.resize(640, 480)
+        self.app = app
+        self.bank_name = None
+        self.accent = "#7ecfff"
 
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
-        header = QLabel(bank_name)
-        header.setStyleSheet(
-            f"color:{accent};font-family:monospace;font-size:15px;font-weight:bold;")
-        root.addWidget(header)
+        top_row = QHBoxLayout()
+        back_btn = QPushButton("\u2190 Back")
+        back_btn.clicked.connect(lambda: self.app.go_home())
+        top_row.addWidget(back_btn)
+        self.header = QLabel("")
+        self.header.setStyleSheet(
+            "color:#7ecfff;font-family:monospace;font-size:15px;font-weight:bold;")
+        top_row.addWidget(self.header)
+        top_row.addStretch()
+        root.addLayout(top_row)
 
-        # ---- top-left: the most recently written entry, front and centre
+        # ---- top: the most recently written entry, front and centre ----
         self.latest_box = QWidget()
         lb = QVBoxLayout(self.latest_box)
         lb.setContentsMargins(10, 10, 10, 10)
@@ -536,7 +522,7 @@ class MemoryBankViewer(QWidget):
         lb.addWidget(latest_label)
         self.latest_key = QLabel("—")
         self.latest_key.setStyleSheet(
-            f"color:{accent};font-family:monospace;font-size:13px;font-weight:bold;")
+            "color:#7ecfff;font-family:monospace;font-size:13px;font-weight:bold;")
         lb.addWidget(self.latest_key)
         self.latest_value = QLabel("")
         self.latest_value.setWordWrap(True)
@@ -547,7 +533,7 @@ class MemoryBankViewer(QWidget):
         lb.addWidget(self.latest_time)
         self.latest_box.setStyleSheet(
             "QWidget{background:rgba(255,255,255,0.05);border:1px solid "
-            f"{accent};border-radius:6px;}}")
+            "#7ecfff;border-radius:6px;}")
         root.addWidget(self.latest_box)
 
         # ---- sort direction switch ----
@@ -570,13 +556,20 @@ class MemoryBankViewer(QWidget):
             "font-family:monospace;font-size:11px;border:1px solid rgba(255,255,255,0.08);}")
         root.addWidget(self.list, 1)
 
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.close)
-        root.addWidget(close_btn)
-
+    def open(self, name):
+        """Entry point matching Editor.open_project / TabelEditor.open — the
+        stack widget is built once at startup; this just points it at a
+        different bank and reloads."""
+        self.bank_name = name
+        self.header.setText(name)
         self._reload()
 
+    def set_accent(self, accent):
+        self.accent = accent
+
     def _reload(self):
+        if not self.bank_name:
+            return
         try:
             from storage import load_memory_bank
             data = load_memory_bank(self.bank_name)

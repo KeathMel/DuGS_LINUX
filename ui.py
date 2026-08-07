@@ -23,7 +23,7 @@ from PyQt6.QtCore import Qt
 
 from theme import STYLESHEET
 from storage import PROJECTS_DIR, TABELS_DIR, _ensure
-from home_screen import Home
+from home_screen import Home, MemoryBankViewer
 from tabel_editor import TabelEditor
 from editor import Editor
 
@@ -35,7 +35,8 @@ class App(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.stack = QStackedWidget()
         self.home = Home(self); self.editor = Editor(self); self.tabel = TabelEditor(self)
-        for w in (self.home, self.editor, self.tabel): self.stack.addWidget(w)
+        self.memory = MemoryBankViewer(self)
+        for w in (self.home, self.editor, self.tabel, self.memory): self.stack.addWidget(w)
         lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.addWidget(self.stack)
         self.setStyleSheet(STYLESHEET)
         self.go_home()
@@ -53,6 +54,9 @@ class App(QWidget):
 
     def open_tabel(self, name):
         self.tabel.open(name); self.stack.setCurrentWidget(self.tabel)
+
+    def open_memory(self, name):
+        self.memory.open(name); self.stack.setCurrentWidget(self.memory)
 
 
 if __name__ == "__main__":
