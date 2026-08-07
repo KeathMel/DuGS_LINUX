@@ -360,9 +360,12 @@ class IconBrowser(QWidget):
         if k == "project": self.app.open_project(name)
         elif k == "memory":
             # a full bank editor is optional; if the app doesn't provide one,
-            # banks are still fully usable through the Memory nodes
+            # fall back to the built-in viewer so banks are always browsable
             if hasattr(self.app, "open_memory"):
                 self.app.open_memory(name)
+            else:
+                dlg = MemoryBankViewer(self, name, accent=self.accent)
+                dlg.exec()
         else: self.app.open_tabel(name)
 
 
@@ -487,6 +490,129 @@ class ToggleSwitch(QPushButton):
                 "QPushButton{background:#555;color:#ddd;border:1px solid #777;"
                 "border-radius:13px;font-family:monospace;font-size:11px;}"
             )
+
+
+class MemoryBankViewer(QDialog):
+    """A look inside one Memory Bank — every entry it holds, its most recent
+    write shown up top so you can see at a glance what's freshest, and the
+    full list underneath so you can find anything else. Sorted oldest-first
+    by default, with a switch to flip it newest-first."""
+
+    def __init__(self, parent, bank_name, accent="#7ecfff"):
+        super().__init__(parent)
+        self.bank_name = bank_name
+        self.accent = accent
+        self.setWindowTitle(f"Memory Bank — {bank_name}")
+        self.resize(640, 480)
+
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+
+        header = QLabel(bank_name)
+        header.setStyleSheet(
+            f"color:{accent};font-family:monospace;font-size:15px;font-weight:bold;")
+        root.addWidget(header)
+
+        # ---- top-left: the most recently written entry, front and centre
+        self.latest_box = QWidget()
+        lb = QVBoxLayout(self.latest_box)
+        lb.setContentsMargins(10, 10, 10, 10)
+        lb.setSpacing(4)
+        latest_label = QLabel("MOST RECENT")
+        latest_label.setStyleSheet("color:#888;font-family:monospace;font-size:9px;")
+        lb.addWidget(latest_label)
+        self.latest_key = QLabel("—")
+        self.latest_key.setStyleSheet(
+            f"color:{accent};font-family:monospace;font-size:13px;font-weight:bold;")
+        lb.addWidget(self.latest_key)
+        self.latest_value = QLabel("")
+        self.latest_value.setWordWrap(True)
+        self.latest_value.setStyleSheet("color:#ccc;font-family:monospace;font-size:11px;")
+        lb.addWidget(self.latest_value)
+        self.latest_time = QLabel("")
+        self.latest_time.setStyleSheet("color:#777;font-family:monospace;font-size:9px;")
+        lb.addWidget(self.latest_time)
+        self.latest_box.setStyleSheet(
+            "QWidget{background:rgba(255,255,255,0.05);border:1px solid "
+            f"{accent};border-radius:6px;}}")
+        root.addWidget(self.latest_box)
+
+        # ---- sort direction switch ----
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel("Oldest first"))
+        self.sort_switch = ToggleSwitch(checked=False)
+        self.sort_switch.toggled.connect(self._reload)
+        sort_row.addWidget(self.sort_switch)
+        sort_row.addWidget(QLabel("Newest first"))
+        sort_row.addStretch()
+        self.count_label = QLabel("")
+        self.count_label.setStyleSheet("color:#888;font-family:monospace;font-size:10px;")
+        sort_row.addWidget(self.count_label)
+        root.addLayout(sort_row)
+
+        # ---- the full list, numbered ----
+        self.list = QListWidget()
+        self.list.setStyleSheet(
+            "QListWidget{background:rgba(0,0,0,0.2);color:#ddd;"
+            "font-family:monospace;font-size:11px;border:1px solid rgba(255,255,255,0.08);}")
+        root.addWidget(self.list, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        root.addWidget(close_btn)
+
+        self._reload()
+
+    def _reload(self):
+        try:
+            from storage import load_memory_bank
+            data = load_memory_bank(self.bank_name)
+        except Exception:
+            data = {"entries": {}}
+
+        entries = data.get("entries") or {}
+        # each entry carries updated_at (a unix timestamp) from storage.py's
+        # memory_set — that's what oldest/newest actually sorts on
+        rows = sorted(
+            ((k, e) for k, e in entries.items()),
+            key=lambda kv: kv[1].get("updated_at", 0),
+            reverse=self.sort_switch.isChecked(),   # True = newest first
+        )
+
+        self.count_label.setText(f"{len(rows)} entr{'y' if len(rows)==1 else 'ies'}")
+
+        if rows:
+            # "most recent" is always the actual newest, regardless of which
+            # way the list below is currently sorted
+            newest_key, newest_entry = max(
+                entries.items(), key=lambda kv: kv[1].get("updated_at", 0))
+            self.latest_key.setText(newest_key)
+            self.latest_value.setText(str(newest_entry.get("value", ""))[:300])
+            self.latest_time.setText(self._fmt_time(newest_entry.get("updated_at")))
+        else:
+            self.latest_key.setText("—")
+            self.latest_value.setText("this bank is empty")
+            self.latest_time.setText("")
+
+        self.list.clear()
+        for i, (key, entry) in enumerate(rows, start=1):
+            when = self._fmt_time(entry.get("updated_at"))
+            value_preview = str(entry.get("value", ""))
+            if len(value_preview) > 60:
+                value_preview = value_preview[:60] + "…"
+            item = QListWidgetItem(f"{i:>3}.  {key}   \u00b7   {when}")
+            item.setToolTip(value_preview)
+            self.list.addItem(item)
+
+    @staticmethod
+    def _fmt_time(ts):
+        if not ts:
+            return "no timestamp"
+        try:
+            from datetime import datetime
+            return datetime.fromtimestamp(ts).strftime("%d %b %H:%M:%S")
+        except Exception:
+            return str(ts)
 
 
 class HomeSettingsDialog(QDialog):
