@@ -119,13 +119,26 @@ class SettingsPanelMixin:
     # into a parameter.
     # ===================================================================
     def _upstream_nodes(self, node):
-        """Names of nodes whose output feeds into `node` (direct upstream)."""
+        """Every node whose output could reach `node` — the WHOLE chain that
+        ran before it, not just the one node with a direct wire in. This is
+        what lets the popup show (and drag from) any past node's output, the
+        same way n8n lets you pick any earlier node in the flow, not only
+        the last one."""
         wf = self.canvas.to_workflow(self.current_project or "untitled")
-        ups = []
+        incoming = {}
         for src, links in wf.get("connections", {}).items():
             for l in links:
-                if l.get("to") == node.name and src not in ups:
-                    ups.append(src)
+                incoming.setdefault(l.get("to"), []).append(src)
+
+        ups, seen = [], set()
+        queue = list(incoming.get(node.name, []))
+        while queue:
+            n = queue.pop(0)
+            if n in seen:
+                continue
+            seen.add(n)
+            ups.append(n)
+            queue.extend(incoming.get(n, []))
         return ups
 
     def _json_to_tree(self, parent, value, ref_prefix, src_node):
@@ -238,9 +251,6 @@ class SettingsPanelMixin:
                         self._undo_stack.pop(0)
             except Exception:
                 pass
-        # the settings module may not be in any panel yet — nothing to fill in
-        if getattr(self, "settings_layout", None) is None:
-            return
         while self.settings_layout.count():
             it = self.settings_layout.takeAt(0)
             w = it.widget()
@@ -323,26 +333,6 @@ class SettingsPanelMixin:
                         visible = mode in ("combine_position", "combine_fields", "combine_all")
                     if key == "branch":
                         visible = (mode == "choose_branch")
-
-                # Generic rule: any param can carry "show_if": {"other": value}
-                # and it only appears while that other param matches. This is
-                # what new nodes should use — the per-type blocks above are the
-                # older hardcoded way, kept so existing nodes keep working.
-                spec = next((p for p in params_spec if p.get("key") == key), None)
-                cond = (spec or {}).get("show_if")
-                if cond:
-                    for dep_key, want in cond.items():
-                        have = node.params.get(dep_key)
-                        if isinstance(want, (list, tuple, set)):
-                            ok = have in want
-                        elif isinstance(want, bool):
-                            ok = bool(have) == want
-                        else:
-                            ok = have == want
-                        if not ok:
-                            visible = False
-                            break
-
                 for w in widgets:
                     w.setVisible(visible)
 
@@ -390,20 +380,6 @@ class SettingsPanelMixin:
                     def s(): node.params[k] = w.currentText() or None; self.mark_changed()
                     return s
                 widget.currentTextChanged.connect(mktab(key, widget))
-
-            elif ptype == "memory":
-                widget = QComboBox()
-                from storage import list_memory_banks
-                banks = list_memory_banks()
-                widget.addItem("")
-                widget.addItems(banks)
-                if cur and str(cur) in banks:
-                    widget.setCurrentText(str(cur))
-                widget.setStyleSheet("font-size:13px;")
-                def mkmem(k, w):
-                    def s(): node.params[k] = w.currentText() or None; self.mark_changed()
-                    return s
-                widget.currentTextChanged.connect(mkmem(key, widget))
 
             elif ptype == "bool":
                 widget = QCheckBox()
