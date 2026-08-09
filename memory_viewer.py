@@ -60,7 +60,7 @@ class MemoryBankViewer(QWidget):
         list_header = QHBoxLayout()
         self.select_all_btn = QPushButton("Select all")
         self.select_all_btn.setToolTip("Select every entry, for bulk delete")
-        self.select_all_btn.clicked.connect(lambda: self.list.selectAll())
+        self.select_all_btn.clicked.connect(self._check_all)
         list_header.addWidget(self.select_all_btn)
         self.delete_btn = QPushButton("\U0001f5d1 Delete selected")
         self.delete_btn.setToolTip("Delete every currently selected entry")
@@ -74,7 +74,7 @@ class MemoryBankViewer(QWidget):
         list_col.addLayout(list_header)
 
         self.list = QListWidget()
-        self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.list.currentRowChanged.connect(self._show_detail)
         list_col.addWidget(self.list, 1)
 
@@ -196,6 +196,11 @@ class MemoryBankViewer(QWidget):
         for i, (key, entry) in enumerate(self._rows):
             when = self._fmt_time(entry.get("updated_at"))
             item = QListWidgetItem(f"{i + 1:>3}.  {key}   \u00b7   {when}")
+            # a real checkbox on the row -- delete works off whichever boxes
+            # are ticked, separate from which single row is "open" for
+            # viewing/editing, same as a file manager or email client
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
             self.list.addItem(item)
             if key == self._selected_key:
                 restore_row = i
@@ -239,11 +244,16 @@ class MemoryBankViewer(QWidget):
         save_memory_bank(self.bank_name, data)
         self._reload()
 
+    def _check_all(self):
+        for i in range(self.list.count()):
+            self.list.item(i).setCheckState(Qt.CheckState.Checked)
+
     def _delete_selected(self):
-        """Delete every currently selected entry. Confirmed first — this is
-        the same instinct as the deploy-path guard: irreversible + bulk is
+        """Delete every entry whose checkbox is ticked. Confirmed first —
+        same instinct as the deploy-path guard: irreversible + bulk is
         exactly the combination worth a moment's pause before it happens."""
-        rows = sorted({self.list.row(it) for it in self.list.selectedItems()})
+        rows = [i for i in range(self.list.count())
+               if self.list.item(i).checkState() == Qt.CheckState.Checked]
         if not rows:
             return
         keys = [self._rows[r][0] for r in rows if r < len(self._rows)]
