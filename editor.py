@@ -981,6 +981,11 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
                     self._undo_stack.pop(0)
                 self._redo_stack.clear()
         self.refresh_json()
+        # on_workflow_changed existed on every Panel but nothing ever called
+        # it — this is what makes it real, so any panel (like the project's
+        # Tabel/Memory list) can stay live as nodes are added or removed,
+        # not just after a save.
+        self._panels_notify("on_workflow_changed")
         # debounce autosave so rapid edits don't hammer the disk
         self._autosave_timer.start(600)
 
