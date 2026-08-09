@@ -36,7 +36,7 @@ class MemoryBankViewer(QWidget):
         self._selected_key = None
         root = QVBoxLayout(self); root.setContentsMargins(16, 12, 16, 16); root.setSpacing(8)
 
-        # ---- top bar: DuGS (= back), title, sort order, count ----
+        # ---- top bar: DuGS (= back), title, count ----
         bar = QHBoxLayout()
         self.dugs = QLabel("DuGS")
         self.dugs.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -44,21 +44,41 @@ class MemoryBankViewer(QWidget):
         bar.addWidget(self.dugs)
         self.title = QLabel("-")
         bar.addSpacing(16); bar.addWidget(self.title); bar.addStretch()
-        self.sort_btn = QPushButton("\u2191 Oldest first")
-        self.sort_btn.setToolTip("Click to flip the sort order")
-        self.sort_btn.clicked.connect(self._toggle_sort)
-        bar.addWidget(self.sort_btn)
-        bar.addSpacing(12)
         self.count_label = QLabel("")
         bar.addWidget(self.count_label)
         root.addLayout(bar)
 
-        # ---- body: list on the left, detail/edit on the right ----
+        # ---- body: list (with its own header row) on the left, detail/edit
+        # on the right ----
         body = QHBoxLayout(); body.setSpacing(10)
 
+        list_col = QVBoxLayout(); list_col.setSpacing(4)
+
+        # the list's own header: select-all and delete on one side, sort
+        # order on the other -- these act ON the list right below them, so
+        # they live right above it instead of in the app-wide top bar
+        list_header = QHBoxLayout()
+        self.select_all_btn = QPushButton("Select all")
+        self.select_all_btn.setToolTip("Select every entry, for bulk delete")
+        self.select_all_btn.clicked.connect(lambda: self.list.selectAll())
+        list_header.addWidget(self.select_all_btn)
+        self.delete_btn = QPushButton("\U0001f5d1 Delete selected")
+        self.delete_btn.setToolTip("Delete every currently selected entry")
+        self.delete_btn.clicked.connect(self._delete_selected)
+        list_header.addWidget(self.delete_btn)
+        list_header.addStretch()
+        self.sort_btn = QPushButton("\u2191 Oldest first")
+        self.sort_btn.setToolTip("Click to flip the sort order")
+        self.sort_btn.clicked.connect(self._toggle_sort)
+        list_header.addWidget(self.sort_btn)
+        list_col.addLayout(list_header)
+
         self.list = QListWidget()
+        self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.list.currentRowChanged.connect(self._show_detail)
-        body.addWidget(self.list, 1)
+        list_col.addWidget(self.list, 1)
+
+        body.addLayout(list_col, 1)
 
         detail_box = QVBoxLayout(); detail_box.setSpacing(6)
         self.detail_key = QLabel("select an entry")
@@ -115,6 +135,8 @@ class MemoryBankViewer(QWidget):
         self.title.setStyleSheet(f"color:{btn_color};font-family:monospace;font-size:14px;")
         self.settings_btn.setStyleSheet(button_style(btn_color, circular=True))
         self.sort_btn.setStyleSheet(button_style(btn_color))
+        self.select_all_btn.setStyleSheet(button_style(btn_color))
+        self.delete_btn.setStyleSheet(button_style("#ff6b6b"))
         self.save_btn.setStyleSheet(button_style(btn_color))
         self.list.setStyleSheet(self._list_style(btn_color))
         self.detail_key.setStyleSheet(
@@ -215,6 +237,38 @@ class MemoryBankViewer(QWidget):
         entry["updated_at"] = time.time()
         entries[self._selected_key] = entry
         save_memory_bank(self.bank_name, data)
+        self._reload()
+
+    def _delete_selected(self):
+        """Delete every currently selected entry. Confirmed first — this is
+        the same instinct as the deploy-path guard: irreversible + bulk is
+        exactly the combination worth a moment's pause before it happens."""
+        rows = sorted({self.list.row(it) for it in self.list.selectedItems()})
+        if not rows:
+            return
+        keys = [self._rows[r][0] for r in rows if r < len(self._rows)]
+        if not keys:
+            return
+
+        from PyQt6.QtWidgets import QMessageBox
+        noun = "entry" if len(keys) == 1 else f"{len(keys)} entries"
+        confirm = QMessageBox.question(
+            self, "Delete", f"Delete {noun} from '{self.bank_name}'? "
+                            "This can't be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            data = load_memory_bank(self.bank_name)
+        except Exception:
+            return
+        entries = data.get("entries", {})
+        for k in keys:
+            entries.pop(k, None)
+        save_memory_bank(self.bank_name, data)
+        if self._selected_key in keys:
+            self._selected_key = None
         self._reload()
 
     @staticmethod
