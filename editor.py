@@ -1100,8 +1100,16 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             self._last_results[evt["node"]] = evt.get("sample", [])
             ms = evt.get("ms", 0)
             
-            # Extract tokens_used from first sample item if present
-            tokens_used = evt.get("sample", [{}])[0].get("tokens_used")
+            # Extract tokens_used from first sample item if present. Guard
+            # against BOTH: sample being present-but-empty (evt.get's default
+            # only covers the key being missing entirely, not an empty list --
+            # that crashed with IndexError), and the first item's json not
+            # being a dict at all, e.g. {"json": "some string"} from an
+            # upstream node -- calling .get() on a string crashed with
+            # AttributeError.
+            sample = evt.get("sample") or [{}]
+            first = sample[0] if sample else {}
+            tokens_used = first.get("tokens_used") if isinstance(first, dict) else None
             if tokens_used is not None:
                 log_line = f"{evt['node']}  →  {evt.get('items_out', 0)} item(s)  ({ms:.0f} ms)  [Tokens used: {tokens_used}]"
             else:
