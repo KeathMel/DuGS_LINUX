@@ -1099,9 +1099,15 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             # keep this node's output sample so the I/O panel can show it
             self._last_results[evt["node"]] = evt.get("sample", [])
             ms = evt.get("ms", 0)
-            self._append_result(
-                f"{evt['node']}  →  {evt.get('items_out', 0)} item(s)  ({ms:.0f} ms)"
-            )
+            
+            # Extract tokens_used from first sample item if present
+            tokens_used = evt.get("sample", [{}])[0].get("tokens_used")
+            if tokens_used is not None:
+                log_line = f"{evt['node']}  →  {evt.get('items_out', 0)} item(s)  ({ms:.0f} ms)  [Tokens used: {tokens_used}]"
+            else:
+                log_line = f"{evt['node']}  →  {evt.get('items_out', 0)} item(s)  ({ms:.0f} ms)"
+            
+            self._append_result(log_line)
             # if this node is the one open in settings, refresh its I/O view
             if getattr(self, "_io_node", None) == evt["node"]:
                 self._refresh_io_panel()
