@@ -449,3 +449,284 @@ leave out:
 
 A module that crashes gets logged and skipped instead of taking the editor down
 with it.
+
+
+---
+
+# SYSTEM ARCHITECTURE — how this actually works internally
+
+Everything below this line is written for whoever (human or AI) needs to
+change something and doesn't want to rediscover the internals by reading
+every file cold. Where something is stated as fact, it was read directly out
+of the current source, not inferred or guessed — that distinction matters
+because guessed internals are exactly what caused wasted turns before this
+section existed. Where a detail comes from earlier work in this same
+project (not re-verified this pass) it says so.
+
+## The three processes, and which one runs a workflow
+
+DuGS is not one program. It's three, and knowing which one you're looking
+at answers most confusion before it starts:
+
+| Process | File | Talks Qt? | Runs `engine.py`? |
+|---|---|---|---|
+| The desktop app | `ui.py` (+ editor/home/tabel/memory screens) | yes | no — never directly |
+| The local API server | `api.py` | no | yes, server-side |
+| The headless runner | `dugs_runner.py` (separate repo) | no | yes, standalone |
+
+**The app never runs a workflow itself.** Pressing Run in the editor does
+not call `engine.run_workflow()` in the app's own process. It starts a
+`RunWorker` (in `editor_workers.py`) which does an HTTP POST to
+`api.py`'s `/run-stream` endpoint. `api.py` is the one that actually calls
+`engine.run_workflow(workflow, on_event=push)`, and streams the results
+back over Server-Sent Events. The app just relays and displays.
+
+This matters because "why doesn't my change to editor.py affect what
+happens when I press Run" is answered by: because the actual execution
+happens in a different process (`api.py`), not the one you're editing.
+
+The headless runner (`dugs_runner.py`) is the third path: it imports and
+calls `engine.run_workflow()` **directly**, no HTTP, no Qt, nothing — that's
+what lets it run on a phone under Termux with zero dependencies beyond
+Python itself. All three consumers (app-via-api, webhooks-via-api, and the
+standalone runner) share the exact same `engine.py` and the exact same node
+files — that's the one core the whole system is built around.
+
+## The engine (`engine.py`) — the actual execution core
+
+`Engine.run_workflow(workflow, start_node=None, start_data=None, on_event=None)`
+is the only entry point. It:
+
+1. Instantiates every node in `workflow["nodes"]` via `self.registry` (built
+   by `discover_nodes()`, which imports every `.py` file in a `nodes/`
+   folder and registers any `Node` subclass by its `TYPE`).
+2. Works out **start nodes** — nodes with `INPUTS == 0`, or nodes with no
+   incoming connection — and seeds them with either empty items, or (if
+   `start_node`/`start_data` were given, which is how a real webhook hit or
+   a headless-runner trigger kicks things off) the real incoming data.
+3. Walks a work queue of `(target_name, in_port, items)` deliveries. A node
+   only actually runs once **every** connected input port has delivered —
+   this is what makes a Merge-style multi-input node correctly wait for
+   every branch instead of firing on the first one to arrive.
+4. Builds `node._context` before calling `node.run()` — a dict of
+   `{other_node_name: [that node's first-output-port items]}` for every
+   node that's already produced output. This is exactly what powers
+   `{{ $('Other Node').item.json.x }}` expressions, and it means **any**
+   already-run node is referenceable, not just the one directly wired in
+   (this is the mechanism the popup's variable picker was fixed to actually
+   expose — see "the upstream-nodes bug" below).
+5. Nodes with `ALLOW_RERUN = True` on their class can fire more than once
+   — this is how a feedback loop works: an IF's "false" branch wiring back
+   into a Loop node re-triggers it, clearing that node's (and everything
+   downstream of it's) prior run-state so it can go again. A back-edge
+   delivering **zero** items into an already-run loop node does NOT
+   re-trigger it — that's the guard against a false/empty branch spinning
+   the loop forever.
+6. A node can raise `WebhookRespondSignal(status, body)` (from
+   `webhook_respond.py`) to short-circuit the entire run immediately and
+   return `{"__webhook_response__": {"status":..., "body":...}, **results}`
+   — this is how "Respond to Webhook" sends an HTTP reply and stops the
+   workflow in one move, from deep inside the node itself, not by any
+   special-casing in the engine.
+
+### The `on_event` callback — exact shapes, verbatim from the engine's own docstring
+
+```
+{"kind": "start", "nodes": [...names...]}
+{"kind": "node_running", "node": name, "type": type_id, "items_in": N}
+{"kind": "node_done", "node": name, "items_out": N,
+                       "ports": [N0, N1, ...], "ms": float,
+                       "sample": [ ...up to 3 item jsons... ]}
+{"kind": "edge", "from": name, "out": i, "to": name, "in": j, "items": N}
+{"kind": "node_error", "node": name, "error": str}
+{"kind": "done"}
+```
+
+`sample` is exactly `[item.get("json", {}) for item in first_output_port[:3]]`
+— the first up to 3 items' json dicts from the node's **first** output port
+only. This is the field that carries anything a node stamped onto its own
+output — including AI token counts (see "Token tracking" below). A failure
+inside `on_event` itself is swallowed (`try/except: pass`) so a broken
+listener can never break the actual run.
+
+## How a Run button press actually flows, end to end
+
+1. `Editor.run()` builds the workflow dict, creates a `RunWorker(wf)`
+   (`editor_workers.py`), connects `run_worker.event` to
+   `Editor._on_run_event`, and starts the thread.
+2. `RunWorker.run()` does `for evt in api_post_stream("/run-stream", wf): self.event.emit(evt)`
+   — it does **no interpretation**, it just relays whatever comes back.
+3. On the server side, `api.py`'s `_handle_run_stream` calls
+   `engine.run_workflow(workflow, on_event=push)`, where `push(evt)` writes
+   `f"data: {json.dumps(evt)}\n\n"` to the open HTTP response — a
+   Server-Sent-Events stream. It does not reformat or filter events; every
+   `emit()` call inside the engine reaches the client as-is.
+4. Back in the app, `Editor._on_run_event(evt)` is where the human-readable
+   text actually gets built. For a `node_done` event:
+   ```python
+   self._last_results[evt["node"]] = evt.get("sample", [])
+   ms = evt.get("ms", 0)
+   self._append_result(
+       f"{evt['node']}  →  {evt.get('items_out', 0)} item(s)  ({ms:.0f} ms)"
+   )
+   ```
+   `self._append_result` writes into `editor.results` — the `QTextEdit`
+   from the Run Log module — and `self._last_results[node_name]` is what
+   feeds the node popup's OUTPUT column when you reopen a node after a run.
+
+A webhook hit follows the same `engine.run_workflow(..., on_event=...)`
+call, inside `api.py`'s `_handle_webhook_hit` — but it broadcasts through
+the general `/events` stream instead of `/run-stream`. Before running, it
+fires `{"kind": "webhook_run_start", "workflow": name, "path": path}`, and
+every subsequent engine event gets tagged with `workflow` and
+`"source": "webhook"` before being broadcast, so a listening UI knows which
+project's canvas to light up even though nobody personally pressed Run.
+`EventListener` (a persistent background subscriber in `editor_workers.py`)
+is what's listening on that `/events` stream, reconnecting automatically if
+the server restarts.
+
+The **headless runner** (`dugs_runner.py`) does not go through any of this
+— it calls `engine.run_workflow()` directly in its own process and writes
+one JSON file per run into `runs/`, with its own separate schema (see
+"The two run-history systems" below). It is not wired to `editor.py` at
+all; the two are independent consumers of the same engine.
+
+## The Node contract (`node_base.py`)
+
+Every node subclasses `Node` and sets, at minimum, `TYPE` (a unique string
+like `"core.set"`), and implements `run(self, items) -> items`.
+
+Class attributes: `TITLE`, `CATEGORY` (which palette group it sorts into
+and what colour it gets), `INPUTS`, `OUTPUTS` (integers; `INPUTS = 0` marks
+it as a trigger), `PARAMS` (the settings list — see the "ADDING A NODE"
+section above for every param type).
+
+Instance helpers, all inherited:
+- `self.p(key, default)` — the raw param value, no `{{ }}` resolving.
+- `self.resolve(key, item_json, default)` / `self.rexpr(value, item_json)`
+  — resolves `{{ }}` expressions, including cross-node references, against
+  `self._context` (set by the engine right before `run()` is called — see
+  step 4 above).
+- `params` is a plain dict the engine builds from the saved workflow JSON's
+  `node["params"]`.
+
+**Branching**: return a list of lists instead of a flat list — one list per
+output port. Set `OUTPUTS` to match. The engine treats `output[0]` being a
+list as "this is multi-port" and normalises accordingly.
+
+**Triggers**: `INPUTS = 0`. The engine seeds it directly, no upstream
+delivery needed.
+
+## Token tracking — the actual mechanism, and the current known gap
+
+There is **no special AI-node handling anywhere in the engine**. Token
+counts flow through the exact same `sample` field every other node's
+output does — an AI node just needs to put a `tokens_used` (or
+`tokens_this_call`) key onto its own output item's `json`, the same way it
+puts `reply` there. Nothing else needs to know AI nodes exist as a
+category.
+
+`ai_helper.py` (carried from earlier work this session, not re-verified
+this pass — flag if something here doesn't match a fresh read) is a small
+shared module: a process-wide token counter (`tokens_used()`,
+`_add_tokens(n)`, `reset_tokens()`) plus a generic OpenAI-compatible
+`chat()` helper. `ai_agent.py` calls `ai_helper._add_tokens()` after every
+API call and stamps `tokens_used` onto its output — this is the pattern
+every AI node is meant to follow.
+
+**Known gap, verified by reading the current file**: `ai_openrouter.py`'s
+`_call()` method reads the full API response (`payload`) but only extracts
+`payload["choices"][0]["message"]["content"]`. It never touches
+`payload.get("usage")` — which is where OpenRouter (same OpenAI-compatible
+shape as everywhere else) puts `prompt_tokens` / `completion_tokens` /
+`total_tokens`. This is why token counts show up nowhere for this node: the
+data is thrown away before it ever reaches the item, so there's nothing in
+`sample` for any consumer (the editor's live log, the headless runner's
+run-history, anything) to find.
+
+**The exact fix, verified against the real call chain**: in
+`ai_openrouter.py`'s `_call()`, after parsing `payload`, pull
+`payload.get("usage", {})` and return it alongside the reply text; in
+`run()`, stamp it onto the output item (e.g. `out.append({"json": {**j,
+"reply": reply_text, "tokens_used": usage.get("total_tokens")}})`). Once
+that's in the item's json, it automatically appears in `evt["sample"]` on
+the `node_done` event with zero engine or transport changes needed — and
+`Editor._on_run_event` can then read `evt.get("sample", [{}])[0].get("tokens_used")`
+to append it to the log line, exactly where the existing
+`f"{evt['node']} → {items_out} item(s) ({ms:.0f} ms)"` line is built.
+
+## The panel/module system (carried from earlier work this session)
+
+Panels live down the left/right/bottom edges of the editor, start empty,
+and are populated via a `+` menu that lists every discovered module. A
+module is a `Panel` subclass (`panel_base.py`) with `ID`, `TITLE`, `SIDE`,
+`ORDER`, `STRETCH`, and a `build()` method returning the widget it shows.
+
+Optional hooks (all safe to skip): `on_project_opened(name)`,
+`on_selection_changed(node)`, `on_workflow_changed()`, `on_run_event(evt)`,
+`refresh()`, `apply_theme(css, colors)`, `header_widgets()`.
+
+By convention, `Editor.results` is the `QTextEdit` the Run Log module
+exposes (`panel_run_log.py` sets `self.editor.results = box` in its
+`build()`) — any code anywhere that wants to write a status line calls
+`self.results.setText(...)` / the `_append_result` helper, without needing
+to know or care whether the Run Log module is currently even visible.
+
+`on_workflow_changed` exists on every panel but historically was never
+actually called by anything — `mark_changed()` (called after every node
+add/move/delete/param edit) now fires it, so a panel like "Tabels &
+Memory" (which lists what the *live* canvas references, not just the last
+save) updates immediately as you edit, not only after an autosave.
+
+## The two run-history systems — do not confuse them
+
+There are **two separate places** a "run log" can mean, and they are not
+the same code, the same file format, or the same UI:
+
+1. **The editor's live text log** — `panel_run_log.py`'s `QTextEdit`
+   (`editor.results`), filled line-by-line by `_on_run_event` as described
+   above. Text only, ephemeral, cleared on each new run, exists only while
+   the app is open and a run is happening live.
+
+2. **The headless runner's persisted history** — `dugs_runner.py` writes
+   one JSON file per run into `runs/`, with fields: `workflow`, `ran_at`,
+   `duration_ms`, `input`, `result`, `error`, `layout` (a snapshot of node
+   positions/wiring, captured separately via `_extract_layout(wf)` so a run
+   can be redrawn without needing the original project file), and
+   `node_status` (per-node `items_out`, `ms`, and `tokens` — built from the
+   SAME `on_event` callback mechanism, just consumed differently: the
+   runner's own `run_workflow()` wrapper installs an `on_event` that
+   accumulates `node_done` events into `node_timing`/`node_tokens` dicts
+   over the course of one run, then bakes them into the saved record).
+   This is what `home_screen.py`'s Runs drawer / `RunCanvasView` reads —
+   it's a completely separate, disk-persisted system, unrelated to the
+   app's live text log, and it works whether or not the desktop app was
+   ever open for that run.
+
+If you're asked to "add tokens to the run log," always ask (or check)
+**which** of these two is meant — the fixes live in different files
+(`editor.py` for #1, `dugs_runner.py` for #2), and doing one doesn't
+touch the other at all.
+
+## Storage layer (`storage.py`) — the five kinds of saved things
+
+All pure filesystem I/O, no Qt. Five categories, each its own folder:
+`projects/` (workflows), `tabels/` (spreadsheets), `credentials/`,
+`memory_banks/`, and (runner-only) `runs/`.
+
+Key functions worth knowing exist rather than rediscovering:
+`load_project`/`save_project`, `load_tabel`/`save_tabel`,
+`load_memory_bank`/`save_memory_bank`, `memory_get`/`memory_set`/`memory_all`/
+`memory_all_sorted`/`memory_clear`, `deploy_project`/`undeploy_project`
+(which also carry a workflow's Tabel/Memory dependencies along to the
+runner folder — see `workflow_dependencies()`), `export_project` (the
+single-file portable bundle format for Download).
+
+`memory_set(bank, key, value, ttl_seconds=None, append=False)` — with
+`append=True`, writes a **brand new, separate entry** under an
+auto-generated timestamp-suffixed key, rather than growing whatever's
+already under `key`. It does not merge or concatenate. Returns
+`(value, actual_key)` — the actual key matters because it won't equal the
+`key` you passed in when appending.
+
+---
