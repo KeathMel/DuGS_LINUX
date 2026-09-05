@@ -12,6 +12,15 @@ from PyQt6.QtWidgets import QTextEdit
 from panel_base import Panel
 
 
+def _pfs(base):
+    """Panel font size — follows the panel text multiplier from settings."""
+    try:
+        from home_screen import pfs
+        return pfs(base)
+    except Exception:
+        return base
+
+
 class RunLogPanel(Panel):
     ID = "run_log"
     TITLE = "RUN LOG"
@@ -24,7 +33,7 @@ class RunLogPanel(Panel):
         box.setReadOnly(True)
         box.setStyleSheet(
             "background: rgba(10,10,10,0.5); color:#ddd; "
-            "font-family:monospace; font-size:9px; border:1px solid #444;")
+            f"font-family:monospace; font-size:{_pfs(9)}px; border:1px solid #444;")
         # the editor writes status here from many places, so expose it under
         # the name the rest of the code already uses
         self.editor.results = box

@@ -16,6 +16,15 @@ from PyQt6.QtCore import Qt
 from panel_base import Panel
 
 
+def _pfs(base):
+    """Panel font size — follows the panel text multiplier from settings."""
+    try:
+        from home_screen import pfs
+        return pfs(base)
+    except Exception:
+        return base
+
+
 class JsonCodePanel(Panel):
     ID = "json"
     TITLE = "JSON"
@@ -28,7 +37,7 @@ class JsonCodePanel(Panel):
         view.setReadOnly(True)
         view.setStyleSheet(
             "background: rgba(10,10,10,0.5); color:#9fb; "
-            "font-family:monospace; font-size:9px; border:1px solid #444;")
+            f"font-family:monospace; font-size:{_pfs(9)}px; border:1px solid #444;")
         view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.editor.json_view = view
         return view
@@ -36,7 +45,7 @@ class JsonCodePanel(Panel):
     def header_widgets(self):
         btn = QPushButton("⎘ copy")
         btn.setFixedSize(54, 18)
-        btn.setStyleSheet("font-size:9px; padding:0px 4px; border:1px solid #444;"
+        btn.setStyleSheet(f"font-size:{_pfs(9)}px; padding:0px 4px; border:1px solid #444;"
                           "color:#888; border-radius:3px;")
         btn.clicked.connect(self._copy)
         return [btn]
@@ -62,4 +71,4 @@ class JsonCodePanel(Panel):
                 panel, _text, border = colors
                 self.widget.setStyleSheet(
                     f"background:{panel}; color:#9fb; font-family:monospace; "
-                    f"font-size:9px; border:1px solid {border};")
+                    f"font-size:{_pfs(9)}px; border:1px solid {border};")
