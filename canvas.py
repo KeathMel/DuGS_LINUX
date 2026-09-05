@@ -162,8 +162,18 @@ class CanvasNode:
         # draw them noticeably smaller so a hardware graph stays readable.
         self.is_device = str(type_id).startswith("device.")
         self.category = category or ("robotics" if self.is_device else "")
-        self.s = int(NODE_SIZE * 0.6) if self.is_device else NODE_SIZE
+        self.apply_node_size()
         self.params = params or {}
+
+    def apply_node_size(self):
+        """Pick up the size from settings. Called on creation and again when
+        the settings popup saves, so the slider doesn't need a restart."""
+        try:
+            from home_screen import node_size
+            base = node_size()
+        except Exception:
+            base = NODE_SIZE
+        self.s = int(base * 0.6) if self.is_device else base
 
     def rect(self): return QRectF(self.x, self.y, self.s, self.s)
     def del_rect(self): return QRectF(self.x + self.s - 18, self.y + 2, 16, 16)
@@ -288,7 +298,12 @@ class Canvas(QWidget):
         return None
 
     def port_at(self, wpos):
-        r = 16
+        # how forgiving the grab is, from the settings popup
+        try:
+            from home_screen import wire_snap
+            r = wire_snap()
+        except Exception:
+            r = 16
         for n in self.nodes:
             no = n.n_outputs()
             for i in range(no):

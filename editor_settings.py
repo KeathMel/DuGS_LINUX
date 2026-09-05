@@ -7,6 +7,7 @@ Implemented as a mixin: Editor (in editor.py) inherits from SettingsPanelMixin
 so `self` here is the Editor instance — it has self.settings_layout,
 self.canvas, self.current_project, etc. already set up by Editor.__init__.
 """
+import re
 import json
 import random
 import string
@@ -23,9 +24,28 @@ from api_client import api_get
 from storage import list_tabels
 
 
+def _ps(css):
+    """Scale every font-size in a stylesheet string by the PANEL text setting.
+
+    The settings panel sets sizes in a couple of dozen places, many of them
+    built into concatenated or f-strings. Rather than thread a multiplier
+    through each one, every stylesheet this panel applies goes through here,
+    so one setting moves all of them and their relative sizes are kept.
+    """
+    try:
+        from home_screen import pfs
+    except Exception:
+        return css
+    try:
+        return re.sub(r"font-size:\s*(\d+)px",
+                      lambda m: f"font-size:{pfs(int(m.group(1)))}px", css)
+    except Exception:
+        return css
+
+
 class SettingsPanelMixin:
     def _tag(self, text):
-        l = QLabel(text); l.setStyleSheet("color:#999; font-family:monospace; font-size:11px;"); return l
+        l = QLabel(text); l.setStyleSheet(_ps("color:#999; font-family:monospace; font-size:11px;")); return l
 
     # ----------------------------------------------------------- webhook banner
     def _build_webhook_url_banner(self, node):
@@ -43,19 +63,19 @@ class SettingsPanelMixin:
         box_lay = QVBoxLayout(box); box_lay.setContentsMargins(0, 4, 0, 8); box_lay.setSpacing(5)
         box.setStyleSheet("background: rgba(20,20,20,0.45); border:1px solid #444; border-radius:5px;")
 
-        tag = QLabel("WEBHOOK URL"); tag.setStyleSheet("color:#999; font-size:9px; font-weight:bold; border:none; padding:6px 8px 0px 8px;")
+        tag = QLabel("WEBHOOK URL"); tag.setStyleSheet(_ps("color:#999; font-size:9px; font-weight:bold; border:none; padding:6px 8px 0px 8px;"))
         box_lay.addWidget(tag)
 
         url_row = QHBoxLayout(); url_row.setContentsMargins(8, 0, 8, 0); url_row.setSpacing(0)
         method_pill = QLabel(method); method_pill.setFixedHeight(22)
-        method_pill.setStyleSheet("background:#5a4632; color:#e8b06a; font-size:10px; font-weight:bold; padding:0px 7px; border-top-left-radius:4px; border-bottom-left-radius:4px;")
+        method_pill.setStyleSheet(_ps("background:#5a4632; color:#e8b06a; font-size:10px; font-weight:bold; padding:0px 7px; border-top-left-radius:4px; border-bottom-left-radius:4px;"))
         method_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
         url_row.addWidget(method_pill)
         url_field = QLineEdit(full_url); url_field.setReadOnly(True); url_field.setFixedHeight(22)
-        url_field.setStyleSheet("font-size:10px; color:#ddd; background:#1a1a1a; border:1px solid #444; border-left:none; border-top-left-radius:0px; border-bottom-left-radius:0px; padding:0px 6px;")
+        url_field.setStyleSheet(_ps("font-size:10px; color:#ddd; background:#1a1a1a; border:1px solid #444; border-left:none; border-top-left-radius:0px; border-bottom-left-radius:0px; padding:0px 6px;"))
         url_row.addWidget(url_field, 1)
         copy_btn = QPushButton("⎘"); copy_btn.setFixedSize(24, 22)
-        copy_btn.setStyleSheet(f"font-size:11px; padding:0px; border:1px solid {ACCENT}; color:{ACCENT}; margin-left:4px;")
+        copy_btn.setStyleSheet(_ps(f"font-size:11px; padding:0px; border:1px solid {ACCENT}; color:{ACCENT}; margin-left:4px;"))
         def do_copy():
             QApplication.clipboard().setText(url_field.text())
             copy_btn.setText("✓")
@@ -67,11 +87,11 @@ class SettingsPanelMixin:
         registered = self._is_webhook_registered(path)
         status_row = QHBoxLayout(); status_row.setContentsMargins(8, 0, 8, 2)
         if registered:
-            dot = QLabel("●"); dot.setStyleSheet("color:#5c5; font-size:9px; border:none;")
-            txt = QLabel("live — save again any time you change the path"); txt.setStyleSheet("color:#5c5; font-size:9px; border:none;")
+            dot = QLabel("●"); dot.setStyleSheet(_ps("color:#5c5; font-size:9px; border:none;"))
+            txt = QLabel("live — save again any time you change the path"); txt.setStyleSheet(_ps("color:#5c5; font-size:9px; border:none;"))
         else:
-            dot = QLabel("●"); dot.setStyleSheet("color:#888; font-size:9px; border:none;")
-            txt = QLabel("not live yet — click Save to register this URL"); txt.setStyleSheet("color:#888; font-size:9px; border:none;")
+            dot = QLabel("●"); dot.setStyleSheet(_ps("color:#888; font-size:9px; border:none;"))
+            txt = QLabel("not live yet — click Save to register this URL"); txt.setStyleSheet(_ps("color:#888; font-size:9px; border:none;"))
         status_row.addWidget(dot); status_row.addWidget(txt); status_row.addStretch()
         box_lay.addLayout(status_row)
 
@@ -80,7 +100,7 @@ class SettingsPanelMixin:
             warn_lay = QVBoxLayout(warn); warn_lay.setContentsMargins(8, 6, 8, 6)
             warn.setStyleSheet("background: rgba(180,120,40,0.15); border:1px solid #a06820; border-radius:4px;")
             wl = QLabel("Add a 'Respond to Webhook' node to control\nwhat gets sent back. Without one, this will\nauto-reply with {\"ok\": true}.")
-            wl.setWordWrap(True); wl.setStyleSheet("color:#d9a35c; font-size:9px; border:none;")
+            wl.setWordWrap(True); wl.setStyleSheet(_ps("color:#d9a35c; font-size:9px; border:none;"))
             warn_lay.addWidget(wl)
             box_lay.addWidget(warn)
 
@@ -162,11 +182,11 @@ class SettingsPanelMixin:
         """Build a QTreeWidget. data_by_node: {node_name: [item_json, ...]}."""
         tree = QTreeWidget()
         tree.setHeaderLabels(["field", "value"])
-        tree.setStyleSheet(
+        tree.setStyleSheet(_ps(
             "QTreeWidget{background:rgba(10,10,10,0.5);color:#9fb;"
             "font-family:monospace;font-size:10px;border:1px solid #444;}"
             "QTreeWidget::item{padding:1px;}"
-        )
+        ))
         tree.setColumnWidth(0, 120)
         tree.setMaximumHeight(160)
         for src_node, items in data_by_node.items():
@@ -211,7 +231,7 @@ class SettingsPanelMixin:
         else:
             hint = QLabel("run the workflow to see input data" if ups
                           else "(no upstream nodes connected)")
-            hint.setStyleSheet("color:#555;font-family:monospace;font-size:10px;")
+            hint.setStyleSheet(_ps("color:#555;font-family:monospace;font-size:10px;"))
             hint.setWordWrap(True)
             self.settings_layout.addWidget(hint)
 
@@ -223,7 +243,7 @@ class SettingsPanelMixin:
             self.settings_layout.addWidget(self._make_json_tree("output", {node.name: own}))
         else:
             hint2 = QLabel("run the workflow to see output data")
-            hint2.setStyleSheet("color:#555;font-family:monospace;font-size:10px;")
+            hint2.setStyleSheet(_ps("color:#555;font-family:monospace;font-size:10px;"))
             self.settings_layout.addWidget(hint2)
 
         # divider before the normal settings
@@ -260,16 +280,16 @@ class SettingsPanelMixin:
             self._io_node = None
             self._io_node_obj = None
             hint = QLabel("Select a node\nto edit settings."); hint.setWordWrap(True)
-            hint.setStyleSheet("color:#666; font-family:monospace; font-size:12px;")
+            hint.setStyleSheet(_ps("color:#666; font-family:monospace; font-size:12px;"))
             self.settings_layout.addWidget(hint); self.settings_layout.addStretch(); return
 
         meta = self.meta_by_type.get(node.type_id, {})
         params_spec = meta.get("params", [])
 
-        head = QLabel(node.name); head.setStyleSheet(f"color:{ACCENT}; font-family:monospace; font-size:15px; font-weight:bold;")
+        head = QLabel(node.name); head.setStyleSheet(_ps(f"color:{ACCENT}; font-family:monospace; font-size:15px; font-weight:bold;"))
         head.setWordWrap(True)
         self.settings_layout.addWidget(head)
-        ttag = QLabel(node.type_id); ttag.setStyleSheet("color:#555; font-family:monospace; font-size:10px;")
+        ttag = QLabel(node.type_id); ttag.setStyleSheet(_ps("color:#555; font-family:monospace; font-size:10px;"))
         self.settings_layout.addWidget(ttag)
 
         # remember which node's settings are open, so a run can refresh its
@@ -280,7 +300,7 @@ class SettingsPanelMixin:
 
         self.settings_layout.addWidget(self._tag("name"))
         name_edit = QLineEdit(node.name)
-        name_edit.setStyleSheet("font-size:13px;")
+        name_edit.setStyleSheet(_ps("font-size:13px;"))
         def set_name():
             new = (name_edit.text() or "").strip()
             # a node name must never be an expression — that corrupts
@@ -298,7 +318,7 @@ class SettingsPanelMixin:
 
         if not params_spec:
             note = QLabel("(no settings for this node)")
-            note.setStyleSheet("color:#555; font-family:monospace; font-size:11px;")
+            note.setStyleSheet(_ps("color:#555; font-family:monospace; font-size:11px;"))
             self.settings_layout.addWidget(note)
             self.settings_layout.addStretch(); return
 
@@ -356,7 +376,7 @@ class SettingsPanelMixin:
                 widget.addItems(opts)
                 if cur is not None and str(cur) in opts:
                     widget.setCurrentText(str(cur))
-                widget.setStyleSheet("font-size:13px;")
+                widget.setStyleSheet(_ps("font-size:13px;"))
                 def mksel(k, w):
                     def s():
                         node.params[k] = w.currentText()
@@ -375,7 +395,7 @@ class SettingsPanelMixin:
                 widget.addItems(tabels)
                 if cur and str(cur) in tabels:
                     widget.setCurrentText(str(cur))
-                widget.setStyleSheet("font-size:13px;")
+                widget.setStyleSheet(_ps("font-size:13px;"))
                 def mktab(k, w):
                     def s(): node.params[k] = w.currentText() or None; self.mark_changed()
                     return s
@@ -384,7 +404,7 @@ class SettingsPanelMixin:
             elif ptype == "bool":
                 widget = QCheckBox()
                 widget.setChecked(bool(cur))
-                widget.setStyleSheet("font-size:13px;")
+                widget.setStyleSheet(_ps("font-size:13px;"))
                 def mkbool(k, w):
                     def s():
                         node.params[k] = w.isChecked()
@@ -394,7 +414,7 @@ class SettingsPanelMixin:
 
             elif ptype == "json":
                 widget = QPlainTextEdit(json.dumps(cur, indent=2) if cur is not None else "")
-                widget.setFixedHeight(80); widget.setStyleSheet("font-size:11px;")
+                widget.setFixedHeight(80); widget.setStyleSheet(_ps("font-size:11px;"))
                 def mk(k, w):
                     def s():
                         txt = w.toPlainText().strip()
@@ -406,7 +426,7 @@ class SettingsPanelMixin:
 
             elif ptype == "multiline":
                 widget = QPlainTextEdit(str(cur) if cur is not None else "")
-                widget.setFixedHeight(100); widget.setStyleSheet("font-size:11px;")
+                widget.setFixedHeight(100); widget.setStyleSheet(_ps("font-size:11px;"))
                 def mk2(k, w):
                     def s(): node.params[k] = w.toPlainText(); self.mark_changed(push_undo=False)
                     return s
@@ -414,7 +434,7 @@ class SettingsPanelMixin:
 
             else:  # text / number
                 widget = QLineEdit("" if cur is None else str(cur))
-                widget.setStyleSheet("font-size:13px;")
+                widget.setStyleSheet(_ps("font-size:13px;"))
                 def mk3(k, w, is_num):
                     def s():
                         v = w.text()

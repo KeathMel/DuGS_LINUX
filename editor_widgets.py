@@ -45,6 +45,18 @@ from PyQt6.QtCore import QMimeData
 from PyQt6.QtGui import QDrag
 
 
+
+def _nfs(base):
+    """Node-popup font size. Every widget in this file is built by the node
+    popup, so they all follow the node text multiplier from the settings
+    popup. Falls back to the raw size if home_screen is not importable."""
+    try:
+        from home_screen import fs
+        return fs(base)
+    except Exception:
+        return base
+
+
 class DragJsonTree(QTreeWidget):
     """A JSON tree whose rows can be dragged; the drag carries the field's
     {{ }} reference as text so it can be dropped into any param box."""
@@ -55,8 +67,12 @@ class DragJsonTree(QTreeWidget):
         self.setDragEnabled(True)
         self.setStyleSheet(
             "QTreeWidget{background:rgba(10,10,10,0.5);color:#9fb;"
-            "font-family:monospace;font-size:10px;border:1px solid #444;}"
+            f"font-family:monospace;font-size:{_nfs(10)}px;border:1px solid #444;}}"
             "QTreeWidget::item{padding:1px;}"
+            # the header carries its own font, so it needs saying twice or the
+            # "field"/"value" row stays small while the rows below it grow
+            "QHeaderView::section{background:rgba(0,0,0,0.35);color:#aaa;"
+            f"font-family:monospace;font-size:{_nfs(10)}px;border:none;padding:2px 4px;}}"
         )
 
     def startDrag(self, _actions):
@@ -142,7 +158,7 @@ class ExpandableText(QWidget):
         self.expand_btn.setFixedSize(20, 16)
         self.expand_btn.setToolTip("expand this box to a big editor")
         self.expand_btn.setStyleSheet(
-            "QPushButton{font-size:11px;padding:0px;border:1px solid #555;"
+            f"QPushButton{{font-size:{_nfs(11)}px;padding:0px;border:1px solid #555;"
             "color:#aaa;border-radius:3px;background:rgba(0,0,0,0.25);}"
             "QPushButton:hover{color:#fff;border-color:#999;}")
         self.expand_btn.clicked.connect(self._expand)
@@ -188,7 +204,7 @@ class _ExpandDialog(QDialog):
 
         bar = QHBoxLayout()
         tlabel = QLabel(title)
-        tlabel.setStyleSheet("color:#ccc;font-family:monospace;font-size:11px;font-weight:bold;")
+        tlabel.setStyleSheet(f"color:#ccc;font-family:monospace;font-size:{_nfs(11)}px;font-weight:bold;")
         bar.addWidget(tlabel)
         bar.addStretch()
         self.side_btn = QPushButton("\u21c4 side")   # flip left/right
@@ -202,7 +218,7 @@ class _ExpandDialog(QDialog):
         lay.addLayout(bar)
 
         self.big = DropTextEdit(text)
-        self.big.setStyleSheet("font-family:monospace;font-size:13px;")
+        self.big.setStyleSheet(f"font-family:monospace;font-size:{_nfs(13)}px;")
         lay.addWidget(self.big, 1)
 
         # editing the big box flows straight back into the little one
@@ -238,11 +254,18 @@ class HelpLabel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
         lbl = QLabel(text)
-        lbl.setStyleSheet("color:#bbb;font-family:monospace;font-size:11px;")
+        lbl.setStyleSheet(f"color:#bbb;font-family:monospace;font-size:{_nfs(11)}px;")
         lay.addWidget(lbl)
         if help_text:
             q = QLabel("(?)")
-            q.setStyleSheet(f"color:{accent};font-family:monospace;font-size:10px;")
+            # the QToolTip clause is not optional: without it the label's own
+            # colour bleeds into its tooltip, giving accent-blue text on the
+            # desktop's default yellow tooltip background.
+            q.setStyleSheet(
+                f"QLabel {{ color:{accent};font-family:monospace;font-size:{_nfs(10)}px; }}"
+                f"QToolTip {{ background:#000;color:#fff;border:1px solid {accent};"
+                f"border-radius:3px;padding:6px 8px;font-family:monospace;font-size:{_nfs(12)}px; }}"
+            )
             q.setToolTip(help_text)
             q.setCursor(Qt.CursorShape.WhatsThisCursor)
             lay.addWidget(q)

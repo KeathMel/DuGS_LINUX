@@ -545,6 +545,14 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             s = {}
         self.ui_settings = s
 
+        # node size may have changed — resize what is already on the canvas,
+        # not just nodes added from here on
+        try:
+            for n in self.canvas.nodes:
+                n.apply_node_size()
+        except Exception:
+            pass
+
         # let the canvas pick up the new background/grid
         try:
             self.canvas.reload_theme()
@@ -557,8 +565,15 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             # see-through: modules paint no fill of their own so the editor's
             # fog is what shows behind their text
             panel = "transparent"
+        # this css is pushed onto every panel's inner widget, so a hardcoded
+        # size here silently overrode the panel text setting everywhere —
+        # including the JSON view
+        try:
+            from home_screen import pfs as _pfs
+        except Exception:
+            def _pfs(n): return n
         self._panel_css = (f"background: {panel}; color:{text}; "
-                           f"font-family:monospace; font-size:9px; "
+                           f"font-family:monospace; font-size:{_pfs(9)}px; "
                            f"border:1px solid {border};")
         # The window is translucent, so each panel's container must paint an
         # opaque background or old frames stay on screen and the UI smears.
@@ -586,10 +601,20 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             # opaque only when we actually have a solid colour; a see-through
             # panel must NOT auto-fill or it paints over its own contents
             box.setAutoFillBackground(not no_bg)
+        # panel text size rides along with the background rule: a stylesheet set
+        # on the module frame beats the app-wide QWidget font-size, and any
+        # child with its own font-size (the module title, the summary line)
+        # still wins over this, so relative sizes are kept.
+        try:
+            from home_screen import pfs
+            _panel_font = f"QWidget#modframe_{{id}} QWidget{{{{font-size:{pfs(13)}px;}}}}"
+        except Exception:
+            _panel_font = ""
         for m in getattr(self, "panels", []):
             if m.container is not None:
                 m.container.setStyleSheet(
-                    f"QWidget#modframe_{m.ID}{{background:{frame_bg};}}")
+                    f"QWidget#modframe_{m.ID}{{background:{frame_bg};}}"
+                    + (_panel_font.format(id=m.ID) if _panel_font else ""))
                 m.container.setAutoFillBackground(not no_bg)
         # each panel then styles its own inner widget
         self._panels_notify("apply_theme", self._panel_css, (panel, text, border))
@@ -987,7 +1012,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         # not just after a save.
         self._panels_notify("on_workflow_changed")
         # debounce autosave so rapid edits don't hammer the disk
-        self._autosave_timer.start(600)
+        self._queue_autosave()
 
     def _do_autosave(self):
         if not self.current_project:
@@ -1003,6 +1028,21 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         except Exception as e:
             self.results.setText(f"autosave failed: {e}")
 
+    def _autosave_enabled(self):
+        """Autosave can be switched off entirely, in which case Save is the
+        only thing that writes. Read at each use so the switch takes effect on
+        the very next edit."""
+        try:
+            from home_screen import autosave_enabled
+            return autosave_enabled()
+        except Exception:
+            return True
+
+    def _queue_autosave(self):
+        """Start the idle timer, unless autosave is switched off."""
+        if self._autosave_enabled():
+            self._autosave_timer.start(600)
+
     def _apply_snapshot(self, snap):
         self._suppress_snapshot = True
         try:
@@ -1012,7 +1052,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             self.refresh_json()
         finally:
             self._suppress_snapshot = False
-        self._autosave_timer.start(600)
+        self._queue_autosave()
 
     def undo(self):
         if len(self._undo_stack) < 1:

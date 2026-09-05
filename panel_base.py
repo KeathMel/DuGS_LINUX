@@ -192,7 +192,7 @@ class ModuleFrame(QWidget):
             hl.setSpacing(4)
             hl.addWidget(GripDots())
             title = QLabel(module.TITLE)
-            title.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:9px;")
+            title.setStyleSheet(f"color:#8a8a8a;font-family:monospace;font-size:{_pfs(9)}px;")
             hl.addWidget(title)
             hl.addStretch()
             for w in module.header_widgets():
@@ -241,7 +241,7 @@ class ModuleFrame(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu{background:#1e1e1e;color:#ddd;font-family:monospace;"
-            "font-size:11px;border:1px solid #555;}"
+            f"font-size:{_pfs(11)}px;border:1px solid #555;}}"
             "QMenu::item:selected{background:#333;}")
         act_remove = menu.addAction(f"Remove {self.module.TITLE}")
         menu.addSeparator()
@@ -295,13 +295,13 @@ class PanelBox(QWidget):
         self.plus.setFixedSize(18, 16)
         self.plus.setToolTip("choose which modules this panel shows")
         self.plus.setStyleSheet(
-            "QPushButton{font-size:11px;padding:0px;border:1px solid #666;"
+            f"QPushButton{{font-size:{_pfs(11)}px;padding:0px;border:1px solid #666;"
             "color:#aaa;border-radius:3px;background:rgba(0,0,0,0.25);}"
             "QPushButton:hover{color:#fff;border-color:#999;}")
         self.plus.clicked.connect(self.show_module_menu)
         bar.addWidget(self.plus)
         self.summary = QLabel("")
-        self.summary.setStyleSheet("color:#777;font-family:monospace;font-size:8px;")
+        self.summary.setStyleSheet(f"color:#777;font-family:monospace;font-size:{_pfs(8)}px;")
         bar.addWidget(self.summary)
         bar.addStretch()
         outer.addLayout(bar)
@@ -350,7 +350,7 @@ class PanelBox(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu{background:#1e1e1e;color:#ddd;font-family:monospace;"
-            "font-size:11px;border:1px solid #555;}"
+            f"font-size:{_pfs(11)}px;border:1px solid #555;}}"
             "QMenu::item:selected{background:#333;}")
         mine = {m.ID for m in self.modules}
         for mod in self.editor.all_modules:
@@ -368,6 +368,18 @@ class PanelBox(QWidget):
         menu.exec(self.plus.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
 
 
+
+def _pfs(base):
+    """Panel font size: the panel text multiplier from the settings popup,
+    applied to a base size. Falls back to the raw size if home_screen is not
+    importable (a panel can be built before it loads)."""
+    try:
+        from home_screen import pfs
+        return pfs(base)
+    except Exception:
+        return base
+
+
 # ------------------------------------------------------------- EDGE ARROW
 class EdgeArrow(QPushButton):
     """The little arrow on an edge that pulls its panel open or shut."""
@@ -383,7 +395,7 @@ class EdgeArrow(QPushButton):
             self.setFixedSize(12, 34)
         self.setStyleSheet(
             "QPushButton{border:none;background:rgba(255,255,255,0.06);"
-            "color:#999;font-size:9px;padding:0px;}"
+            f"color:#999;font-size:{_pfs(9)}px;padding:0px;}}"
             "QPushButton:hover{background:rgba(255,255,255,0.14);color:#fff;}")
         self.clicked.connect(self._clicked)
         self._sync()

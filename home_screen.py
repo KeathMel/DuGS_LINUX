@@ -16,7 +16,8 @@ import weakref
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QListWidget,
     QListWidgetItem, QStackedWidget, QInputDialog, QMenu, QMessageBox, QLineEdit,
-    QDialog, QColorDialog, QFileDialog, QSlider, QFrame, QSizePolicy
+    QDialog, QColorDialog, QFileDialog, QSlider, QFrame, QSizePolicy, QComboBox,
+    QScrollArea
 )
 from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, QEasingCurve, pyqtProperty
 from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QIcon, QPixmap, QAction
@@ -52,33 +53,90 @@ DEFAULT_HOME_UI_SETTINGS = {
     "canvas_no_background": False,  # True = see-through everywhere, dark fog
     "panel_color": None,          # user-picked panel/canvas background colour
     "fog_opacity": 150,           # how dark the fog is when see-through (0-255)
-    "text_scale": 1.0,            # multiplier applied to every font size
+    "node_size": 84,              # canvas node square, in px
+    "wire_snap": 16,              # how close a dragged wire grabs a port, in px
+    # --- text ---
+    "node_text_scale": 1.0,       # text inside the node popup
+    "panel_text_scale": 1.0,      # text in the panels/modules around the canvas
+    # --- behaviour ---
+    "autosave_enabled": True,     # False = the editor never autosaves
 }
 
 
 # ---- text scale ---------------------------------------------------------
-# One multiplier the whole app reads, so a person can make ALL text bigger or
-# smaller while each piece keeps its own relative size (a title stays bigger
-# than a label). Widgets call fs(9), fs(16) etc. instead of hard-coding sizes.
-_TEXT_SCALE = 1.0
+# Two multipliers, because the two places text lives want different sizes: the
+# node popup is a form you read up close, the panels around the canvas are
+# chrome you glance at. Each piece keeps its own relative size within its
+# group — widgets call fs(9)/pfs(11) instead of hard-coding a number.
+_NODE_TEXT_SCALE = 1.0
+_PANEL_TEXT_SCALE = 1.0
 
 
-def text_scale():
-    return _TEXT_SCALE
-
-
-def set_text_scale(mult):
-    global _TEXT_SCALE
+def _clamp_scale(mult):
     try:
-        _TEXT_SCALE = max(0.6, min(3.0, float(mult)))
+        return max(0.6, min(3.0, float(mult)))
     except (TypeError, ValueError):
-        _TEXT_SCALE = 1.0
+        return 1.0
+
+
+def set_node_text_scale(mult):
+    global _NODE_TEXT_SCALE
+    _NODE_TEXT_SCALE = _clamp_scale(mult)
+
+
+def set_panel_text_scale(mult):
+    global _PANEL_TEXT_SCALE
+    _PANEL_TEXT_SCALE = _clamp_scale(mult)
+
+
+def node_text_scale():
+    return _NODE_TEXT_SCALE
+
+
+def panel_text_scale():
+    return _PANEL_TEXT_SCALE
 
 
 def fs(base):
-    """A font size in px with the global text multiplier applied. Never smaller
-    than 6px so nothing vanishes."""
-    return max(6, round(base * _TEXT_SCALE))
+    """A font size in px for the NODE POPUP, with its multiplier applied.
+    Never smaller than 6px so nothing vanishes."""
+    return max(6, round(base * _NODE_TEXT_SCALE))
+
+
+def pfs(base):
+    """A font size in px for the PANELS around the canvas."""
+    return max(6, round(base * _PANEL_TEXT_SCALE))
+
+
+# kept so anything still importing the old names keeps working
+text_scale = node_text_scale
+set_text_scale = set_node_text_scale
+
+
+def node_size():
+    """Canvas node square in px. Read live so the slider takes effect on the
+    next repaint rather than needing a restart."""
+    try:
+        return max(40, min(200, int(load_home_ui_settings().get("node_size", 84))))
+    except Exception:
+        return 84
+
+
+def autosave_enabled():
+    """False means the editor never saves on its own — Save is the only way
+    a change reaches disk."""
+    try:
+        return bool(load_home_ui_settings().get("autosave_enabled", True))
+    except Exception:
+        return True
+
+
+def wire_snap():
+    """How close, in px, a dragged wire has to get before it grabs a port."""
+    try:
+        return max(4, min(60, int(load_home_ui_settings().get("wire_snap", 16))))
+    except Exception:
+        return 16
 
 
 def load_home_ui_settings():
@@ -91,8 +149,13 @@ def load_home_ui_settings():
     settings = dict(DEFAULT_HOME_UI_SETTINGS)
     if isinstance(data, dict):
         settings.update({k: v for k, v in data.items() if k in DEFAULT_HOME_UI_SETTINGS})
-    # keep the global multiplier in step with what's saved
-    set_text_scale(settings.get("text_scale", 1.0))
+        # one text_scale used to cover the node popup only — carry an existing
+        # setting over to the node slider rather than silently resetting it
+        if "text_scale" in data and "node_text_scale" not in data:
+            settings["node_text_scale"] = data["text_scale"]
+    # keep the multipliers in step with what's saved
+    set_node_text_scale(settings.get("node_text_scale", 1.0))
+    set_panel_text_scale(settings.get("panel_text_scale", 1.0))
     return settings
 
 
@@ -362,21 +425,155 @@ class IconBrowser(QWidget):
         else: self.app.open_tabel(name)
 
 
+CRED_TYPES = {
+    # Adding a service is one entry here — the panel builds the form from it,
+    # so nothing below this dict needs touching.
+    #
+    # 'token' is the key every existing node already looks for first, so
+    # whichever field holds the thing a node needs should keep that key.
+    "api_token": {
+        "label": "API token (generic)",
+        "fields": [
+            {"key": "token", "label": "TOKEN", "secret": True,
+             "placeholder": "paste the token"},
+        ],
+    },
+    "openai_compatible": {
+        "label": "OpenAI-compatible (DeepSeek, OpenRouter, OpenAI…)",
+        "fields": [
+            {"key": "token", "label": "API KEY", "secret": True,
+             "placeholder": "sk-…"},
+            {"key": "base_url", "label": "BASE URL", "secret": False,
+             "default": "https://api.openai.com/v1",
+             "placeholder": "https://openrouter.ai/api/v1"},
+            {"key": "model", "label": "DEFAULT MODEL (optional)", "secret": False,
+             "placeholder": "deepseek-chat"},
+        ],
+    },
+    "discord_webhook": {
+        "label": "Discord webhook",
+        "fields": [
+            {"key": "token", "label": "WEBHOOK URL", "secret": True,
+             "placeholder": "https://discord.com/api/webhooks/…"},
+            {"key": "username", "label": "OVERRIDE USERNAME (optional)",
+             "secret": False, "placeholder": "DuGS"},
+        ],
+    },
+    "telegram_bot": {
+        "label": "Telegram bot",
+        "fields": [
+            {"key": "token", "label": "BOT TOKEN", "secret": True,
+             "placeholder": "123456:ABC-DEF…"},
+            {"key": "chat_id", "label": "DEFAULT CHAT ID (optional)",
+             "secret": False, "placeholder": "-1001234567890"},
+        ],
+    },
+    "google_oauth": {
+        "label": "Google OAuth (Sheets, Drive, Gmail…)",
+        "fields": [
+            {"key": "client_id", "label": "CLIENT ID", "secret": False,
+             "placeholder": "…apps.googleusercontent.com"},
+            {"key": "client_secret", "label": "CLIENT SECRET", "secret": True},
+            {"key": "token", "label": "REFRESH TOKEN", "secret": True,
+             "placeholder": "1//0e…"},
+            {"key": "scopes", "label": "SCOPES", "secret": False,
+             "placeholder": "https://www.googleapis.com/auth/spreadsheets"},
+        ],
+    },
+    "basic_auth": {
+        "label": "Username & password",
+        "fields": [
+            {"key": "username", "label": "USERNAME", "secret": False},
+            {"key": "token", "label": "PASSWORD", "secret": True},
+        ],
+    },
+    "custom_header": {
+        "label": "Custom header (any API)",
+        "fields": [
+            {"key": "header_name", "label": "HEADER NAME", "secret": False,
+             "default": "Authorization"},
+            {"key": "prefix", "label": "VALUE PREFIX", "secret": False,
+             "default": "Bearer", "placeholder": "Bearer, Token, or blank"},
+            {"key": "token", "label": "VALUE", "secret": True},
+        ],
+    },
+}
+DEFAULT_CRED_TYPE = "api_token"
+
+
+class SecretField(QWidget):
+    """One credential field: label, input, and a Show button when it's a
+    secret. Nothing service-specific lives here — the spec dict decides."""
+
+    def __init__(self, spec):
+        super().__init__()
+        self.key = spec["key"]
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lbl = QLabel(spec["label"])
+        lbl.setStyleSheet("color:#bbb;font-family:monospace;font-size:11px;letter-spacing:1px;")
+        lay.addWidget(lbl)
+
+        row = QHBoxLayout(); row.setSpacing(6)
+        self.edit = QLineEdit()
+        self.edit.setStyleSheet("font-family:monospace;font-size:13px;padding:6px;")
+        if spec.get("placeholder"):
+            self.edit.setPlaceholderText(spec["placeholder"])
+        self.secret = bool(spec.get("secret"))
+        if self.secret:
+            self.edit.setEchoMode(QLineEdit.EchoMode.Password)
+        row.addWidget(self.edit, 1)
+
+        self.show_btn = None
+        if self.secret:
+            self.show_btn = QPushButton("Show")
+            self.show_btn.setCheckable(True)
+            self.show_btn.setFixedWidth(64)
+            self.show_btn.toggled.connect(self._toggle)
+            row.addWidget(self.show_btn)
+        lay.addLayout(row)
+
+    def _toggle(self, on):
+        self.edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
+        self.show_btn.setText("Hide" if on else "Show")
+
+    def value(self):
+        return self.edit.text().strip()
+
+    def set_value(self, v):
+        self.edit.setText(v or "")
+
+    def set_enabled(self, on):
+        self.edit.setEnabled(on)
+        if self.show_btn:
+            self.show_btn.setEnabled(on)
+
+
 class CredentialsPanel(QWidget):
-    """Manage named credentials (e.g. a DeepSeek token). Each credential is a
-    small JSON file {name, token}. AI nodes can pick one by name instead of
-    pasting the token every time."""
+    """Manage named credentials. Each one is a small JSON file: {name, type,
+    …fields}. The form is built from CRED_TYPES, so a service needing more
+    than a token (Google's client id + secret + refresh token, Discord's
+    webhook URL) is a dict entry rather than new UI.
+
+    Older credentials saved as {name, token} have no type — they load as
+    'api_token', and 'token' stays the key nodes read first, so nothing
+    already wired up breaks."""
+
     def __init__(self, app, accent=None):
         super().__init__()
         self.app = app
         self.accent = accent or DEFAULT_BUTTON_COLOR
         self.current = None
-        root = QHBoxLayout(self); root.setContentsMargins(0, 8, 0, 0); root.setSpacing(16)
+        self.fields = []
+        root = QHBoxLayout(self); root.setContentsMargins(0, 8, 0, 0); root.setSpacing(20)
 
-        # left: list of saved credentials + new/delete
+        # left: saved credentials
         leftw = QVBoxLayout(); leftw.setSpacing(6)
         leftw.addWidget(self._tag("SAVED CREDENTIALS"))
-        self.list = QListWidget(); self.list.setFixedWidth(260)
+        self.list = QListWidget()
+        self.list.setMinimumWidth(240)
         self.list.itemClicked.connect(self._on_pick)
         leftw.addWidget(self.list, 1)
         row = QHBoxLayout()
@@ -384,29 +581,109 @@ class CredentialsPanel(QWidget):
         del_btn = QPushButton("Delete"); del_btn.clicked.connect(self._delete)
         row.addWidget(new_btn); row.addWidget(del_btn)
         leftw.addLayout(row)
-        root.addLayout(leftw)
+        root.addLayout(leftw, 2)
 
-        # right: editor for the selected credential
+        # right: the editor, as one card. Capped so a 50-character token isn't
+        # given the whole window, but wide enough for a Google refresh token.
         rightw = QVBoxLayout(); rightw.setSpacing(6)
         rightw.addWidget(self._tag("CREDENTIAL"))
-        self.name_lbl = QLabel("(select or create a credential)")
-        self.name_lbl.setStyleSheet(f"color:{self.accent};font-family:monospace;font-size:15px;")
-        rightw.addWidget(self.name_lbl)
-        rightw.addWidget(self._sublabel("DeepSeek API Token"))
-        self.token_edit = QLineEdit()
-        self.token_edit.setPlaceholderText("paste your DeepSeek token here")
-        self.token_edit.setStyleSheet("font-family:monospace;font-size:13px;padding:6px;")
-        rightw.addWidget(self.token_edit)
-        save_btn = QPushButton("Save Credential"); save_btn.clicked.connect(self._save)
-        rightw.addWidget(save_btn)
-        self.status = QLabel(""); self.status.setStyleSheet("color:#7CFC9B;font-family:monospace;font-size:11px;")
-        rightw.addWidget(self.status)
+
+        self.card = QFrame()
+        self.card.setObjectName("credCard")
+        self.card.setMaximumWidth(760)
+        card = QVBoxLayout(self.card)
+        card.setContentsMargins(18, 16, 18, 16)
+        card.setSpacing(12)
+
+        self.name_lbl = QLabel("no credential selected")
+        card.addWidget(self.name_lbl)
+
+        typerow = QHBoxLayout(); typerow.setSpacing(8)
+        tl = QLabel("TYPE")
+        tl.setStyleSheet("color:#bbb;font-family:monospace;font-size:11px;letter-spacing:1px;")
+        typerow.addWidget(tl)
+        self.type_box = QComboBox()
+        for key, spec in CRED_TYPES.items():
+            self.type_box.addItem(spec["label"], key)
+        self.type_box.currentIndexChanged.connect(self._on_type_changed)
+        typerow.addWidget(self.type_box, 1)
+        card.addLayout(typerow)
+
+        self.fields_box = QVBoxLayout()
+        self.fields_box.setSpacing(10)
+        card.addLayout(self.fields_box)
+
+        btnrow = QHBoxLayout()
+        self.status = QLabel("")
+        self.status.setStyleSheet("color:#7CFC9B;font-family:monospace;font-size:11px;")
+        btnrow.addWidget(self.status)
+        btnrow.addStretch()
+        self.save_btn = QPushButton("Save")
+        self.save_btn.clicked.connect(self._save)
+        btnrow.addWidget(self.save_btn)
+        card.addLayout(btnrow)
+
+        rightw.addWidget(self.card)
         rightw.addStretch()
-        root.addLayout(rightw, 1)
+        root.addLayout(rightw, 3)
+
+        self._apply_card_style()
+        self._build_fields(DEFAULT_CRED_TYPE, {})
+        self._set_editor_enabled(False)
+
+    # -- form building -------------------------------------------------------
+    def _build_fields(self, type_key, data):
+        """Rebuild the field rows for a type, filling in whatever `data` has."""
+        while self.fields_box.count():
+            item = self.fields_box.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        self.fields = []
+        spec = CRED_TYPES.get(type_key) or CRED_TYPES[DEFAULT_CRED_TYPE]
+        for fspec in spec["fields"]:
+            f = SecretField(fspec)
+            f.set_value(data.get(fspec["key"], fspec.get("default", "")))
+            f.edit.returnPressed.connect(self._save)
+            self.fields_box.addWidget(f)
+            self.fields.append(f)
+
+    def _on_type_changed(self):
+        """Switching type keeps any values whose key exists in both, so
+        picking the wrong type first doesn't cost you the token you pasted."""
+        if self.current is None:
+            self._build_fields(self._type_key(), {})
+            self._set_editor_enabled(False)
+            return
+        kept = {f.key: f.value() for f in self.fields}
+        self._build_fields(self._type_key(), kept)
+
+    def _type_key(self):
+        return self.type_box.currentData() or DEFAULT_CRED_TYPE
+
+    def _select_type(self, key):
+        i = self.type_box.findData(key)
+        self.type_box.blockSignals(True)
+        self.type_box.setCurrentIndex(i if i >= 0 else 0)
+        self.type_box.blockSignals(False)
+
+    # -- styling -------------------------------------------------------------
+    def _apply_card_style(self):
+        self.card.setStyleSheet(
+            "QFrame#credCard{background:rgba(255,255,255,0.03);"
+            "border:1px solid rgba(255,255,255,0.10);border-radius:6px;}")
+
+    def _set_editor_enabled(self, on):
+        for f in self.fields:
+            f.set_enabled(on)
+        self.type_box.setEnabled(on)
+        self.save_btn.setEnabled(on)
+        self.name_lbl.setStyleSheet(
+            f"color:{self.accent if on else '#777'};font-family:monospace;font-size:15px;")
 
     def set_accent(self, color):
         self.accent = color
-        self.name_lbl.setStyleSheet(f"color:{color};font-family:monospace;font-size:15px;")
+        self._set_editor_enabled(self.current is not None)
 
     def _tag(self, t):
         l = QLabel(t); l.setStyleSheet("color:#999;font-family:monospace;font-size:11px;letter-spacing:1px;")
@@ -416,6 +693,12 @@ class CredentialsPanel(QWidget):
         l = QLabel(t); l.setStyleSheet("color:#bbb;font-family:monospace;font-size:12px;")
         return l
 
+    def _say(self, msg, ok=True):
+        self.status.setStyleSheet(
+            f"color:{'#7CFC9B' if ok else '#ff6b6b'};font-family:monospace;font-size:11px;")
+        self.status.setText(msg)
+
+    # -- data ----------------------------------------------------------------
     def refresh(self):
         self.list.clear()
         for name in list_credentials():
@@ -428,26 +711,42 @@ class CredentialsPanel(QWidget):
             data = load_credential(name)
         except Exception:
             data = {}
+        # no saved type = a credential from before types existed
+        tkey = data.get("type") or DEFAULT_CRED_TYPE
+        self._select_type(tkey)
+        self._build_fields(tkey, data)
         self.name_lbl.setText(name)
-        self.token_edit.setText(data.get("token", ""))
         self.status.setText("")
+        self._set_editor_enabled(True)
 
     def _new(self):
         name, ok = QInputDialog.getText(self, "New Credential", "Name (e.g. 'deepseek'):")
         if not ok or not name.strip():
             return
         name = name.strip()
-        save_credential(name, {"name": name, "token": ""})
-        self.refresh(); self.current = name
-        self.name_lbl.setText(name); self.token_edit.setText(""); self.status.setText("created")
+        if name in list_credentials():
+            self._say(f"'{name}' already exists — pick another name", ok=False)
+            return
+        tkey = self._type_key()
+        save_credential(name, {"name": name, "type": tkey})
+        self.refresh()
+        self.current = name
+        self._build_fields(tkey, {})
+        self.name_lbl.setText(name)
+        self._set_editor_enabled(True)
+        self._say("created")
+        if self.fields:
+            self.fields[0].edit.setFocus()
 
     def _save(self):
         if not self.current:
-            self.status.setStyleSheet("color:#ff6b6b;font-family:monospace;font-size:11px;")
-            self.status.setText("create or select a credential first"); return
-        save_credential(self.current, {"name": self.current, "token": self.token_edit.text().strip()})
-        self.status.setStyleSheet("color:#7CFC9B;font-family:monospace;font-size:11px;")
-        self.status.setText(f"saved: {self.current}")
+            self._say("create or select a credential first", ok=False)
+            return
+        data = {"name": self.current, "type": self._type_key()}
+        for f in self.fields:
+            data[f.key] = f.value()
+        save_credential(self.current, data)
+        self._say(f"saved: {self.current}")
 
     def _delete(self):
         if not self.current:
@@ -455,8 +754,12 @@ class CredentialsPanel(QWidget):
         confirm = QMessageBox.question(self, "Delete", f"Delete credential '{self.current}'?")
         if confirm == QMessageBox.StandardButton.Yes:
             delete_credential(self.current)
-            self.current = None; self.name_lbl.setText("(select or create a credential)")
-            self.token_edit.clear(); self.status.setText(""); self.refresh()
+            self.current = None
+            self.name_lbl.setText("no credential selected")
+            self._build_fields(self._type_key(), {})
+            self.status.setText("")
+            self.refresh()
+            self._set_editor_enabled(False)
 
 
 class ToggleSwitch(QPushButton):
@@ -503,13 +806,18 @@ class HomeSettingsDialog(QDialog):
         super().__init__(parent)
         self.home = home
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(400)
+        self.setMinimumSize(780, 580)
         self.setStyleSheet(
             f"QDialog{{background:{GREY_PANEL};}}"
             "QLabel{color:#ddd;font-family:monospace;font-size:13px;}"
             "QPushButton{background:transparent;color:#eee;border:1px solid #777;"
             "border-radius:4px;padding:6px 10px;font-family:monospace;font-size:12px;}"
             "QPushButton:hover{background:rgba(255,255,255,0.10);}"
+            "QListWidget{background:transparent;border:none;font-family:monospace;font-size:12px;}"
+            "QListWidget::item{padding:9px 12px;border-radius:4px;color:#bbb;}"
+            "QListWidget::item:hover{background:rgba(255,255,255,0.06);}"
+            "QListWidget::item:selected{background:rgba(255,255,255,0.10);color:#fff;}"
+            "QScrollArea{background:transparent;border:none;}"
         )
         s = home.settings
         self._button_color = s.get("button_color", DEFAULT_BUTTON_COLOR)
@@ -521,192 +829,389 @@ class HomeSettingsDialog(QDialog):
         self._canvas_no_background = s.get("canvas_no_background", False)
         self._panel_color = s.get("panel_color") or GREY_BG
         self._fog_opacity = int(s.get("fog_opacity", 150))
-        self._text_scale = float(s.get("text_scale", 1.0))
+        self._node_size = int(s.get("node_size", 84))
+        self._wire_snap = int(s.get("wire_snap", 16))
+        self._autosave_enabled = bool(s.get("autosave_enabled", True))
+        self._node_text_scale = float(s.get("node_text_scale", s.get("text_scale", 1.0)))
+        self._panel_text_scale = float(s.get("panel_text_scale", 1.0))
 
-        outer = QVBoxLayout(self); outer.setSpacing(14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # -- header: title + nav arrow (top-right) --------------------------
-        header = QHBoxLayout()
-        self.page_title = QLabel("Home Screen Settings")
-        self.page_title.setStyleSheet("color:#fff;font-family:monospace;font-size:14px;font-weight:bold;")
-        header.addWidget(self.page_title)
-        header.addStretch()
-        self.nav_btn = QPushButton("\u2192")
-        self.nav_btn.setFixedSize(32, 28)
-        self.nav_btn.setToolTip("Workflow UI settings")
-        self.nav_btn.clicked.connect(self._toggle_page)
-        header.addWidget(self.nav_btn)
-        outer.addLayout(header)
+        # -- header ----------------------------------------------------------
+        head = QWidget()
+        head.setStyleSheet("background:rgba(0,0,0,0.15);")
+        hl = QVBoxLayout(head)
+        hl.setContentsMargins(22, 16, 22, 14)
+        hl.setSpacing(2)
+        t = QLabel("Settings")
+        t.setStyleSheet("color:#fff;font-family:monospace;font-size:16px;font-weight:bold;")
+        hl.addWidget(t)
+        sub = QLabel("Applies everywhere the moment you save")
+        sub.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        hl.addWidget(sub)
+        outer.addWidget(head)
+        outer.addWidget(self._hline())
+
+        # -- body: section list on the left, the section itself on the right --
+        # The second page used to hide behind an arrow in the corner, which is
+        # how nobody found the canvas settings. Sections are listed instead, so
+        # everything the dialog can do is visible from the moment it opens.
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+
+        self.nav = QListWidget()
+        self.nav.setFixedWidth(168)
+        self.nav.setSpacing(2)
+        self.nav.setStyleSheet(self.nav.styleSheet() + "QListWidget{padding:12px 10px;}")
+        for name in ("Appearance", "Canvas", "Text", "Behaviour"):
+            self.nav.addItem(QListWidgetItem(name))
+        self.nav.currentRowChanged.connect(self._on_section)
+        body.addWidget(self.nav)
+        body.addWidget(self._vline())
 
         self.stack = QStackedWidget()
-        outer.addWidget(self.stack)
-        self.stack.addWidget(self._build_home_page())
-        self.stack.addWidget(self._build_workflow_page())
+        self.stack.addWidget(self._build_appearance_page())
+        self.stack.addWidget(self._build_canvas_page())
+        self.stack.addWidget(self._build_text_page())
+        self.stack.addWidget(self._build_behaviour_page())
+        body.addWidget(self.stack, 1)
+        outer.addLayout(body, 1)
 
-        row_btns = QHBoxLayout(); row_btns.addStretch()
+        # -- footer ----------------------------------------------------------
+        outer.addWidget(self._hline())
+        foot = QHBoxLayout()
+        foot.setContentsMargins(22, 12, 22, 14)
+        foot.addStretch()
+        reset = QPushButton("Reset")
+        reset.setToolTip("Put every setting back to its default")
+        reset.clicked.connect(self._reset_defaults)
+        foot.addWidget(reset)
         cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
         save = QPushButton("Save"); save.clicked.connect(self._save)
-        row_btns.addWidget(cancel); row_btns.addWidget(save)
-        outer.addLayout(row_btns)
+        save.setStyleSheet(
+            f"QPushButton{{background:rgba(126,207,255,0.14);color:{self._button_color};"
+            f"border:1px solid {self._button_color};border-radius:4px;padding:6px 18px;"
+            "font-family:monospace;font-size:12px;}"
+            "QPushButton:hover{background:rgba(126,207,255,0.24);}")
+        foot.addWidget(cancel); foot.addWidget(save)
+        outer.addLayout(foot)
 
-    def _toggle_page(self):
-        if self.stack.currentIndex() == 0:
-            self.stack.setCurrentIndex(1)
-            self.nav_btn.setText("\u2190")
-            self.nav_btn.setToolTip("Home screen settings")
-            self.page_title.setText("Workflow UI Settings")
-        else:
-            self.stack.setCurrentIndex(0)
-            self.nav_btn.setText("\u2192")
-            self.nav_btn.setToolTip("Workflow UI settings")
-            self.page_title.setText("Home Screen Settings")
+        self.nav.setCurrentRow(0)
 
-    # -- page 1: home screen ------------------------------------------------
-    def _build_home_page(self):
+    def _on_section(self, i):
+        if i >= 0:
+            self.stack.setCurrentIndex(i)
+
+    # -- small building blocks ------------------------------------------------
+    def _hline(self):
+        f = QFrame(); f.setFrameShape(QFrame.Shape.HLine)
+        f.setFixedHeight(1); f.setStyleSheet("background:rgba(255,255,255,0.10);border:none;")
+        return f
+
+    def _vline(self):
+        f = QFrame(); f.setFrameShape(QFrame.Shape.VLine)
+        f.setFixedWidth(1); f.setStyleSheet("background:rgba(255,255,255,0.10);border:none;")
+        return f
+
+    def _group(self, title):
+        l = QLabel(title)
+        l.setStyleSheet("color:#999;font-family:monospace;font-size:11px;letter-spacing:1px;")
+        return l
+
+    def _row(self, label, hint, *widgets):
+        """One setting: its name and explanation on the left, its controls on
+        the right. Every setting uses this, so the rows line up instead of each
+        one inventing its own arrangement."""
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(18)
+
+        textw = QWidget()
+        left = QVBoxLayout(textw)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(3)
+        nl = QLabel(label)
+        nl.setStyleSheet("color:#e4e4e4;font-family:monospace;font-size:12px;")
+        left.addWidget(nl)
+        if hint:
+            hl = QLabel(hint)
+            hl.setWordWrap(True)
+            hl.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+            left.addWidget(hl)
+        textw.setMinimumWidth(230)
+        lay.addWidget(textw, 1)
+
+        ctlw = QWidget()
+        ctl = QHBoxLayout(ctlw)
+        ctl.setContentsMargins(0, 0, 0, 0)
+        ctl.setSpacing(8)
+        ctl.addStretch()
+        for x in widgets:
+            if isinstance(x, QWidget):
+                ctl.addWidget(x)
+            else:
+                ctl.addLayout(x)
+        lay.addWidget(ctlw, 0)
+        return w
+
+    def _page(self, blocks):
         page = QWidget()
-        lay = QVBoxLayout(page); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(22, 18, 22, 18)
+        lay.setSpacing(16)
+        for b in blocks:
+            if b is None:
+                lay.addWidget(self._hline())
+            else:
+                lay.addWidget(b)
+        lay.addStretch()
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.Shape.NoFrame)
+        # A QScrollArea and its viewport keep the default (light) palette even
+        # inside a dark dialog, which leaves the whole page unreadable. The
+        # viewport and the page widget both have to be made transparent.
+        sc.setStyleSheet("QScrollArea{background:transparent;border:none;}"
+                         "QScrollArea > QWidget > QWidget{background:transparent;}")
+        sc.viewport().setStyleSheet("background:transparent;")
+        page.setStyleSheet("background:transparent;")
+        sc.setWidget(page)
+        return sc
 
-        lay.addWidget(self._tag("BUTTON / ACCENT COLOR"))
-        row1 = QHBoxLayout()
+    # -- pages ----------------------------------------------------------------
+    def _build_appearance_page(self):
         self.btn_swatch = QPushButton(); self.btn_swatch.setFixedSize(28, 28)
         self.btn_swatch.setEnabled(False)
         self._paint_swatch(self.btn_swatch, self._button_color)
-        pick1 = QPushButton("Choose\u2026"); pick1.clicked.connect(self._pick_button_color)
-        row1.addWidget(self.btn_swatch); row1.addWidget(pick1); row1.addStretch()
-        lay.addLayout(row1)
+        pick1 = QPushButton("Choose…"); pick1.clicked.connect(self._pick_button_color)
 
-        lay.addWidget(self._tag("LOGO COLOR (\"DuGS\", shared across screens)"))
-        row2 = QHBoxLayout()
         self.logo_swatch = QPushButton(); self.logo_swatch.setFixedSize(28, 28)
         self.logo_swatch.setEnabled(False)
         self._paint_swatch(self.logo_swatch, self._logo_color)
-        pick2 = QPushButton("Choose\u2026"); pick2.clicked.connect(self._pick_logo_color)
-        row2.addWidget(self.logo_swatch); row2.addWidget(pick2); row2.addStretch()
-        lay.addLayout(row2)
+        pick2 = QPushButton("Choose…"); pick2.clicked.connect(self._pick_logo_color)
 
-        lay.addWidget(self._tag("BACKGROUND IMAGE"))
-        row3 = QHBoxLayout()
-        choose_bg = QPushButton("Choose Image\u2026"); choose_bg.clicked.connect(self._pick_bg_image)
-        remove_bg = QPushButton("Remove Image"); remove_bg.clicked.connect(self._remove_bg_image)
-        row3.addWidget(choose_bg); row3.addWidget(remove_bg)
-        row3.addSpacing(20)
-        see_through_lbl = QLabel("See-through:")
+        choose_bg = QPushButton("Choose…"); choose_bg.clicked.connect(self._pick_bg_image)
+        remove_bg = QPushButton("Remove"); remove_bg.clicked.connect(self._remove_bg_image)
+        self.bg_status = QLabel(self._bg_status_text())
+        self.bg_status.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        self.bg_status.setWordWrap(True)
+
         self.transparent_switch = ToggleSwitch(checked=self._bg_transparent)
         self.transparent_switch.toggled.connect(self._on_transparent_toggle)
-        row3.addWidget(see_through_lbl)
-        row3.addWidget(self.transparent_switch)
-        row3.addStretch()
-        lay.addLayout(row3)
-        self.bg_status = QLabel(self._bg_status_text())
-        self.bg_status.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        lay.addWidget(self.bg_status)
-        lay.addStretch()
-        return page
 
-    # -- page 2: workflow editor / canvas ------------------------------------
-    def _build_workflow_page(self):
-        page = QWidget()
-        lay = QVBoxLayout(page); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+        return self._page([
+            self._group("COLOR"),
+            self._row("Accent colour",
+                      "Buttons, tabs and highlights across every screen.",
+                      self.btn_swatch, pick1),
+            self._row("Logo colour",
+                      "The “DuGS” wordmark, shared across screens.",
+                      self.logo_swatch, pick2),
+            None,
+            self._group("HOME BACKGROUND"),
+            self._row("Background image",
+                      "Scaled to cover and centred behind the home screen.",
+                      choose_bg, remove_bg),
+            self.bg_status,
+            self._row("See-through",
+                      "Drops the background entirely so whatever is behind the "
+                      "window shows through.",
+                      self.transparent_switch),
+        ])
 
-        lay.addWidget(self._tag("CANVAS BACKGROUND (n8n-style by default)"))
-        row1 = QHBoxLayout()
-        choose_cbg = QPushButton("Choose Image\u2026"); choose_cbg.clicked.connect(self._pick_canvas_bg_image)
-        remove_cbg = QPushButton("Remove Image"); remove_cbg.clicked.connect(self._remove_canvas_bg_image)
-        row1.addWidget(choose_cbg); row1.addWidget(remove_cbg); row1.addStretch()
-        lay.addLayout(row1)
+    def _build_canvas_page(self):
+        choose_cbg = QPushButton("Choose…"); choose_cbg.clicked.connect(self._pick_canvas_bg_image)
+        remove_cbg = QPushButton("Remove"); remove_cbg.clicked.connect(self._remove_canvas_bg_image)
         self.canvas_bg_status = QLabel(self._canvas_bg_status_text())
-        self.canvas_bg_status.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        lay.addWidget(self.canvas_bg_status)
+        self.canvas_bg_status.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        self.canvas_bg_status.setWordWrap(True)
 
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Grid dots:"))
         self.dots_switch = ToggleSwitch(checked=self._canvas_dots)
         self.dots_switch.toggled.connect(self._on_dots_toggle)
-        row2.addWidget(self.dots_switch)
-        row2.addStretch()
-        lay.addLayout(row2)
-        self.dots_hint = QLabel("Small dot grid over the canvas, like n8n.")
-        self.dots_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        lay.addWidget(self.dots_hint)
 
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("No background:"))
         self.canvas_no_bg_switch = ToggleSwitch(checked=self._canvas_no_background)
         self.canvas_no_bg_switch.toggled.connect(self._on_canvas_no_bg_toggle)
-        row3.addWidget(self.canvas_no_bg_switch)
-        row3.addStretch()
-        lay.addLayout(row3)
-        self.canvas_no_bg_hint = QLabel("Everything goes see-through with a dark fog behind it.")
-        self.canvas_no_bg_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        lay.addWidget(self.canvas_no_bg_hint)
 
-        # --- panel colour -------------------------------------------------
-        row4 = QHBoxLayout()
-        row4.addWidget(QLabel("Panel color:"))
-        self.panel_swatch = QLabel()
-        self.panel_swatch.setFixedSize(34, 18)
+        self.panel_swatch = QLabel(); self.panel_swatch.setFixedSize(34, 18)
         self._paint_swatch(self.panel_swatch, self._panel_color)
-        row4.addWidget(self.panel_swatch)
-        pick_panel = QPushButton("Choose\u2026")
-        pick_panel.clicked.connect(self._pick_panel_color)
-        row4.addWidget(pick_panel)
-        reset_panel = QPushButton("Reset")
-        reset_panel.clicked.connect(self._reset_panel_color)
-        row4.addWidget(reset_panel)
-        row4.addStretch()
-        lay.addLayout(row4)
-        self.panel_hint = QLabel(
-            "Background colour of the panels and canvas. "
-            "Ignored while No background is on.")
-        self.panel_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        lay.addWidget(self.panel_hint)
+        pick_panel = QPushButton("Choose…"); pick_panel.clicked.connect(self._pick_panel_color)
+        reset_panel = QPushButton("Reset"); reset_panel.clicked.connect(self._reset_panel_color)
 
-        # --- fog strength -------------------------------------------------
-        row5 = QHBoxLayout()
-        row5.addWidget(QLabel("Fog:"))
         self.fog_slider = QSlider(Qt.Orientation.Horizontal)
         self.fog_slider.setRange(0, 255)
         self.fog_slider.setValue(self._fog_opacity)
-        self.fog_slider.setFixedWidth(160)
+        self.fog_slider.setFixedWidth(170)
         self.fog_slider.valueChanged.connect(self._on_fog_change)
-        row5.addWidget(self.fog_slider)
         self.fog_value = QLabel(str(self._fog_opacity))
-        self.fog_value.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        row5.addWidget(self.fog_value)
-        row5.addStretch()
-        lay.addLayout(row5)
-        self.fog_hint = QLabel(
-            "How dark the haze is when No background is on, so things stay readable.")
-        self.fog_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        lay.addWidget(self.fog_hint)
+        self.fog_value.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        self.fog_value.setFixedWidth(34)
 
-        # --- text size multiplier ----------------------------------------
-        row6 = QHBoxLayout()
-        row6.addWidget(QLabel("Text size:"))
-        self.text_slider = QSlider(Qt.Orientation.Horizontal)
-        self.text_slider.setRange(60, 250)          # 0.6x .. 2.5x, in tenths
-        self.text_slider.setValue(int(self._text_scale * 100))
-        self.text_slider.setFixedWidth(200)
-        self.text_slider.valueChanged.connect(self._on_text_scale)
-        row6.addWidget(self.text_slider)
-        self.text_value = QLabel(f"{self._text_scale:.2f}x")
-        self.text_value.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        row6.addWidget(self.text_value)
-        row6.addStretch()
-        lay.addLayout(row6)
-        self.text_hint = QLabel(
-            "Multiplies the text size inside the node popup. Each piece keeps "
-            "its own relative size.")
-        self.text_hint.setStyleSheet("color:#999;font-family:monospace;font-size:11px;")
-        self.text_hint.setWordWrap(True)
-        lay.addWidget(self.text_hint)
+        self.node_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.node_size_slider.setRange(48, 160)
+        self.node_size_slider.setValue(self._node_size)
+        self.node_size_slider.setFixedWidth(170)
+        self.node_size_slider.valueChanged.connect(self._on_node_size)
+        self.node_size_value = QLabel(f"{self._node_size} px")
+        self.node_size_value.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        self.node_size_value.setFixedWidth(46)
 
-        lay.addStretch()
-        return page
+        self.wire_snap_slider = QSlider(Qt.Orientation.Horizontal)
+        self.wire_snap_slider.setRange(4, 60)
+        self.wire_snap_slider.setValue(self._wire_snap)
+        self.wire_snap_slider.setFixedWidth(170)
+        self.wire_snap_slider.valueChanged.connect(self._on_wire_snap)
+        self.wire_snap_value = QLabel(f"{self._wire_snap} px")
+        self.wire_snap_value.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        self.wire_snap_value.setFixedWidth(46)
 
-    def _on_text_scale(self, v):
-        self._text_scale = v / 100.0
-        self.text_value.setText(f"{self._text_scale:.2f}x")
+        return self._page([
+            self._group("NODES"),
+            self._row("Node size",
+                      "How big a node square is drawn. Robotics nodes stay "
+                      "smaller than this, as they always have.",
+                      self.node_size_slider, self.node_size_value),
+            self._row("Wire snap",
+                      "How close a dragged wire has to get before it grabs a "
+                      "port. Higher catches more easily, lower gives finer "
+                      "control on a crowded canvas.",
+                      self.wire_snap_slider, self.wire_snap_value),
+            None,
+            self._group("CANVAS BACKGROUND"),
+            self._row("Background image",
+                      "Behind the node graph in the workflow editor.",
+                      choose_cbg, remove_cbg),
+            self.canvas_bg_status,
+            self._row("Grid dots",
+                      "The small dot grid over the canvas, like n8n.",
+                      self.dots_switch),
+            None,
+            self._group("SEE-THROUGH MODE"),
+            self._row("No background",
+                      "Everything goes see-through with a dark fog behind it.",
+                      self.canvas_no_bg_switch),
+            self._row("Fog",
+                      "How dark that haze is, so nodes stay readable.",
+                      self.fog_slider, self.fog_value),
+            self._row("Panel colour",
+                      "Background of the panels and canvas. Ignored while "
+                      "No background is on.",
+                      self.panel_swatch, pick_panel, reset_panel),
+        ])
+
+    def _scale_slider(self, value):
+        sl = QSlider(Qt.Orientation.Horizontal)
+        sl.setRange(60, 250)                        # 0.6x .. 2.5x
+        sl.setValue(int(value * 100))
+        sl.setFixedWidth(200)
+        return sl
+
+    def _build_text_page(self):
+        # Two separate multipliers: the node popup is a form you read up close,
+        # the panels are chrome you glance at, and they rarely want the same
+        # size. One slider for both was always a compromise.
+        self.node_text_slider = self._scale_slider(self._node_text_scale)
+        self.node_text_slider.valueChanged.connect(self._on_node_text_scale)
+        self.node_text_value = QLabel(f"{self._node_text_scale:.2f}x")
+        self.node_text_value.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        self.node_text_value.setFixedWidth(46)
+
+        self.panel_text_slider = self._scale_slider(self._panel_text_scale)
+        self.panel_text_slider.valueChanged.connect(self._on_panel_text_scale)
+        self.panel_text_value = QLabel(f"{self._panel_text_scale:.2f}x")
+        self.panel_text_value.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        self.panel_text_value.setFixedWidth(46)
+
+        return self._page([
+            self._group("NODE POPUP"),
+            self._row("Node text size",
+                      "The text inside a node's popup — inputs, parameters and "
+                      "output. Each piece keeps its own relative size.",
+                      self.node_text_slider, self.node_text_value),
+            None,
+            self._group("PANELS"),
+            self._row("Panel text size",
+                      "The modules around the canvas — node palette, settings, "
+                      "run log, JSON.",
+                      self.panel_text_slider, self.panel_text_value),
+        ])
+
+    def _build_behaviour_page(self):
+        self.autosave_switch = ToggleSwitch(checked=self._autosave_enabled)
+        self.autosave_switch.toggled.connect(self._on_autosave_toggle)
+
+        return self._page([
+            self._group("EDITOR"),
+            self._row("Autosave",
+                      "Saves shortly after you stop making changes. Turn it "
+                      "off and nothing reaches disk until you press Save.",
+                      self.autosave_switch),
+        ])
+
+    def _on_node_text_scale(self, v):
+        self._node_text_scale = v / 100.0
+        self.node_text_value.setText(f"{self._node_text_scale:.2f}x")
+
+    def _on_panel_text_scale(self, v):
+        self._panel_text_scale = v / 100.0
+        self.panel_text_value.setText(f"{self._panel_text_scale:.2f}x")
+
+    def _on_autosave_toggle(self, on):
+        self._autosave_enabled = bool(on)
+
+    def _on_node_size(self, v):
+        self._node_size = int(v)
+        self.node_size_value.setText(f"{self._node_size} px")
+
+    def _on_wire_snap(self, v):
+        self._wire_snap = int(v)
+        self.wire_snap_value.setText(f"{self._wire_snap} px")
+
+    def _reset_defaults(self):
+        """Put every setting back to the shipped default, in the dialog only —
+        nothing is written until Save, so this is undoable with Cancel."""
+        if QMessageBox.question(
+                self, "Reset settings",
+                "Put every setting back to its default?\n"
+                "Nothing is written until you press Save."
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        d = DEFAULT_HOME_UI_SETTINGS
+        self._button_color = d["button_color"]
+        self._logo_color = d["logo_color"]
+        self._bg_image = d["bg_image"]
+        self._bg_transparent = d["bg_transparent"]
+        self._canvas_bg_image = d["canvas_bg_image"]
+        self._canvas_dots = d["canvas_dots"]
+        self._canvas_no_background = d["canvas_no_background"]
+        self._panel_color = GREY_BG
+        self._fog_opacity = d["fog_opacity"]
+        self._node_size = d["node_size"]
+        self._node_text_scale = d["node_text_scale"]
+        self._panel_text_scale = d["panel_text_scale"]
+        self._wire_snap = d["wire_snap"]
+        self._autosave_enabled = d["autosave_enabled"]
+
+        self._paint_swatch(self.btn_swatch, self._button_color)
+        self._paint_swatch(self.logo_swatch, self._logo_color)
+        self._paint_swatch(self.panel_swatch, self._panel_color)
+        self.bg_status.setText(self._bg_status_text())
+        self.canvas_bg_status.setText(self._canvas_bg_status_text())
+        for sw, val in ((self.transparent_switch, self._bg_transparent),
+                        (self.dots_switch, self._canvas_dots),
+                        (self.canvas_no_bg_switch, self._canvas_no_background),
+                        (self.autosave_switch, self._autosave_enabled)):
+            sw.blockSignals(True); sw.setChecked(val); sw.blockSignals(False)
+        for sl, val in ((self.fog_slider, self._fog_opacity),
+                        (self.node_size_slider, self._node_size),
+                        (self.wire_snap_slider, self._wire_snap),
+                        (self.node_text_slider, int(self._node_text_scale * 100)),
+                        (self.panel_text_slider, int(self._panel_text_scale * 100))):
+            sl.setValue(val)          # its own handler refreshes the readout
+        self.fog_value.setText(str(self._fog_opacity))
 
     def _pick_panel_color(self):
         c = QColorDialog.getColor(QColor(self._panel_color), self, "Pick Panel Color")
@@ -806,7 +1311,11 @@ class HomeSettingsDialog(QDialog):
         s["canvas_no_background"] = self._canvas_no_background
         s["panel_color"] = self._panel_color
         s["fog_opacity"] = self._fog_opacity
-        s["text_scale"] = self._text_scale
+        s["node_size"] = self._node_size
+        s["node_text_scale"] = self._node_text_scale
+        s["panel_text_scale"] = self._panel_text_scale
+        s["wire_snap"] = self._wire_snap
+        s["autosave_enabled"] = self._autosave_enabled
         save_home_ui_settings(s)
         broadcast_theme_update()
         self.accept()
@@ -1519,6 +2028,12 @@ class Home(QWidget):
         topbar.addStretch()
         self.new_btn = QPushButton("+ New")
         self.new_btn.clicked.connect(self.new_item)
+        # Credentials hides this button. Without retainSizeWhenHidden the top
+        # bar collapses to the height of the wordmark and the whole tab strip
+        # jumps up — so keep the space reserved and only the button disappears.
+        _sp = self.new_btn.sizePolicy()
+        _sp.setRetainSizeWhenHidden(True)
+        self.new_btn.setSizePolicy(_sp)
         topbar.addWidget(self.new_btn)
         root.addLayout(topbar)
 
