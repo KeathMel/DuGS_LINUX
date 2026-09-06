@@ -58,6 +58,23 @@ class _NullList(_NullWidget):
         return None
 
 
+class _NullLayout(_NullWidget):
+    """Same idea again for a layout that is not on screen.
+
+    settings_layout only becomes a real layout when the Settings module is
+    added to a panel. Before that it used to be a bare None, so anything
+    that rebuilt the settings pane (opening a project calls
+    show_node_settings) crashed on None.count(). Returning 0 here makes the
+    usual "while layout.count(): take widgets out" drain loop simply not
+    run, which is the correct behaviour when there is nothing on screen to
+    clear.
+    """
+    def count(self):
+        return 0
+    def takeAt(self, _i):
+        return None
+
+
 class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
     def __init__(self, app):
         super().__init__()
@@ -389,7 +406,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self.other_projects = _NullList()
         self.settings_area = None
         self.settings_host = None
-        self.settings_layout = None
+        self.settings_layout = _NullLayout()
 
         self.all_modules = []
         try:
