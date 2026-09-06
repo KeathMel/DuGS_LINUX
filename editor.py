@@ -59,19 +59,40 @@ class _NullList(_NullWidget):
 
 
 class _NullLayout(_NullWidget):
-    """Same idea again for a layout that is not on screen.
+    """Stand-in for the settings panel's layout when that module is not on
+    screen.
 
-    settings_layout only becomes a real layout when the Settings module is
-    added to a panel. Before that it used to be a bare None, so anything
-    that rebuilt the settings pane (opening a project calls
-    show_node_settings) crashed on None.count(). Returning 0 here makes the
-    usual "while layout.count(): take widgets out" drain loop simply not
-    run, which is the correct behaviour when there is nothing on screen to
-    clear.
+    Two jobs, and the second one is not optional. `count()` must return 0 so
+    the "while layout.count(): take widgets out" drain loop simply does not
+    run — a bare None there crashed the app on every project open.
+
+    And `addWidget` must TAKE OWNERSHIP of what it is handed. A no-op leaves
+    those widgets with no parent, and in Qt a parentless widget that is shown
+    becomes a TOP-LEVEL WINDOW — which is exactly how the settings fields
+    ended up as boxes floating on the desktop. Parenting them to a hidden
+    sink means they can never appear, even if something later calls
+    setVisible(True) on them (the show_if logic does).
     """
+
+    def __init__(self):
+        self._sink = QWidget()
+        self._sink.hide()
+
     def count(self):
         return 0
+
     def takeAt(self, _i):
+        return None
+
+    def addWidget(self, w=None, *_a, **_k):
+        if w is not None:
+            w.setParent(self._sink)
+
+    def addLayout(self, lay=None, *_a, **_k):
+        # a layout with no parent widget is harmless; nothing to adopt
+        return None
+
+    def addStretch(self, *_a, **_k):
         return None
 
 
@@ -404,8 +425,8 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         self.palette = _NullList()
         self.palette_search = _NullWidget()
         self.other_projects = _NullList()
-        self.settings_area = None
-        self.settings_host = None
+        self.settings_area = _NullWidget()
+        self.settings_host = _NullWidget()
         self.settings_layout = _NullLayout()
 
         self.all_modules = []
