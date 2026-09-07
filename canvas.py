@@ -3,10 +3,11 @@ canvas.py — the node-graph editor surface: CanvasNode (visual model for a
 node) and Canvas (the QWidget that draws/drags/wires nodes together).
 """
 import os
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QWidget, QPlainTextEdit
 from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, QSize
 from PyQt6.QtGui import (
-    QPainter, QPen, QColor, QBrush, QPainterPath, QFont, QPixmap, QIcon
+    QPainter, QPen, QColor, QBrush, QPainterPath, QFont, QPixmap, QIcon,
+    QTextDocument
 )
 try:
     from PyQt6.QtSvg import QSvgRenderer
@@ -210,6 +211,53 @@ class CanvasNode:
         return QPointF(self.x + self.s, self._port_y(idx, self.n_outputs()))
 
 
+NOTE_COLORS = [
+    # name, fill, border — deliberately muted: a note is a background for
+    # nodes to sit on, not something competing with them for attention
+    ("grey",   QColor(255, 255, 255, 18), QColor(255, 255, 255, 60)),
+    ("blue",   QColor(126, 207, 255, 26), QColor(126, 207, 255, 90)),
+    ("green",  QColor(124, 252, 155, 22), QColor(124, 252, 155, 85)),
+    ("amber",  QColor(255, 209, 102, 24), QColor(255, 209, 102, 90)),
+    ("red",    QColor(255, 107, 107, 22), QColor(255, 107, 107, 90)),
+    ("purple", QColor(190, 150, 255, 24), QColor(190, 150, 255, 90)),
+]
+
+NOTE_GRIP = 14          # size of the resize corner, in world units
+NOTE_MIN_W = 120
+NOTE_MIN_H = 80
+
+
+class CanvasNote:
+    """A sticky note: a resizable region drawn BEHIND the nodes.
+
+    It is stored in the workflow like a node (so it travels with the file and
+    needs no second save format) but it has no ports, never connects to
+    anything, and the engine skips it. Text is markdown.
+    """
+
+    def __init__(self, x, y, w=260, h=160, text="", color=0, name=None):
+        self.x = float(x); self.y = float(y)
+        self.w = float(w); self.h = float(h)
+        self.text = text if text is not None else ""
+        self.color = int(color) % len(NOTE_COLORS)
+        self.name = name or "Note"
+
+    def rect(self):
+        return QRectF(self.x, self.y, self.w, self.h)
+
+    def grip_rect(self):
+        """The bottom-right corner you drag to resize."""
+        return QRectF(self.x + self.w - NOTE_GRIP, self.y + self.h - NOTE_GRIP,
+                      NOTE_GRIP, NOTE_GRIP)
+
+    def del_rect(self):
+        return QRectF(self.x + self.w - 18, self.y + 2, 16, 16)
+
+    def color_rect(self):
+        """Small swatch in the top-left: click it to cycle the colour."""
+        return QRectF(self.x + 4, self.y + 4, 14, 14)
+
+
 class Canvas(QWidget):
     def __init__(self, editor):
         super().__init__()
@@ -217,6 +265,11 @@ class Canvas(QWidget):
         self.setMinimumSize(500, 500)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.nodes = []; self.connections = []
+        self.notes = []
+        # note interaction state
+        self.dragging_note = None; self.resizing_note = None
+        self.note_off = QPointF(0, 0); self.selected_note = None
+        self._note_editor = None; self._note_editing = None
         self.dragging = None; self.drag_off = QPointF()
         self.wire_from = None; self.selected = None; self.selected_conn = None
         self.selected_nodes = set()      # multi-selection for mass move
@@ -267,6 +320,8 @@ class Canvas(QWidget):
 
     def clear(self):
         self.nodes.clear(); self.connections.clear()
+        self.notes.clear()
+        self._close_note_editor()
         self.selected = None; self.selected_conn = None
         self.running_node = None; self.ran_nodes.clear()
         self.run_states.clear(); self.edge_counts.clear()
@@ -296,6 +351,39 @@ class Canvas(QWidget):
         for n in reversed(self.nodes):
             if n.rect().contains(wpos): return n
         return None
+
+    def note_at(self, wpos):
+        """Topmost note under this point. Notes are behind nodes, so callers
+        must check node_at() first — a note never steals a node's click."""
+        for nt in reversed(self.notes):
+            if nt.rect().contains(wpos):
+                return nt
+        return None
+
+    def note_grip_at(self, wpos):
+        """A note whose resize corner is under this point."""
+        for nt in reversed(self.notes):
+            if nt.grip_rect().contains(wpos):
+                return nt
+        return None
+
+    def add_note(self, text="", at=None):
+        """Drop a note. With `at` (a world point) it lands there, centred on
+        the cursor; without one it goes to the middle of the view, the way
+        add_node does."""
+        if at is not None:
+            x, y = at.x() - 130, at.y() - 80
+        else:
+            cx = (self.width() / 2 - self.offset.x()) / self.scale
+            cy = (self.height() / 2 - self.offset.y()) / self.scale
+            step = (len(self.notes) % 6) * 22
+            x, y = cx - 130 + step, cy - 80 + step
+        nt = CanvasNote(x, y,
+                        text=text or "## Note\n\nDouble-click to edit.")
+        self.notes.append(nt)
+        self.selected_note = nt
+        self.update()
+        return nt
 
     def port_at(self, wpos):
         # how forgiving the grab is, from the settings popup
@@ -417,12 +505,63 @@ class Canvas(QWidget):
         if n is not None:
             self.select_node(n)
             self.editor.open_node_popup(n)
+            return
+        nt = self.note_at(wpos)
+        if nt is not None:
+            self.edit_note(nt)
+
+    # ---- note text editing ------------------------------------------------
+    def edit_note(self, nt):
+        """Put a real text box over the note so you can type into it.
+
+        A plain QPlainTextEdit positioned in SCREEN space over the note's world
+        rect. It is a child of the canvas, so it pans and needs repositioning
+        whenever the view moves — which is why the editor closes on pan/zoom
+        rather than trying to follow.
+        """
+        self._close_note_editor()
+        self._note_editing = nt
+        ed = QPlainTextEdit(self)
+        ed.setPlainText(nt.text or "")
+        ed.setStyleSheet(
+            "QPlainTextEdit{background:#11161c;color:#e6ecf2;"
+            "border:1px solid #7ecfff;border-radius:5px;padding:6px;"
+            "font-family:monospace;font-size:12px;}")
+        r = nt.rect()
+        tl = QPointF(r.x(), r.y()) * self.scale + self.offset
+        ed.setGeometry(int(tl.x()), int(tl.y()),
+                       max(80, int(r.width() * self.scale)),
+                       max(60, int(r.height() * self.scale)))
+        ed.show(); ed.setFocus()
+        ed.installEventFilter(self)
+        self._note_editor = ed
+        self.update()
+
+    def _commit_note_editor(self):
+        if self._note_editor is not None and self._note_editing is not None:
+            new = self._note_editor.toPlainText()
+            if new != self._note_editing.text:
+                self._note_editing.text = new
+                self.editor.mark_changed()
+
+    def _close_note_editor(self):
+        """Save what was typed and take the box away. Safe to call any time."""
+        ed = getattr(self, "_note_editor", None)
+        if ed is not None:
+            self._commit_note_editor()
+            ed.removeEventFilter(self)
+            ed.hide(); ed.setParent(None); ed.deleteLater()
+        self._note_editor = None
+        self._note_editing = None
+        self.update()
 
     def wheelEvent(self, e):
         # scroll up = zoom in, scroll down = zoom out, anchored at the cursor
         delta = e.angleDelta().y()
         if delta == 0:
             return
+        if self._note_editor is not None:
+            self._close_note_editor()
         factor = 1.0015 ** delta
         new_scale = max(0.2, min(4.0, self.scale * factor))
         if new_scale == self.scale:
@@ -588,6 +727,61 @@ class Canvas(QWidget):
 
         p.translate(self.offset)
         p.scale(self.scale, self.scale)
+
+        # ---- sticky notes -------------------------------------------------
+        # Drawn before the wires and nodes on purpose: a note is a background
+        # region you group things on top of, not an element competing with
+        # them. Everything else paints over it.
+        for nt in self.notes:
+            fill, border = NOTE_COLORS[nt.color % len(NOTE_COLORS)][1:]
+            sel = (nt is self.selected_note)
+            p.setPen(QPen(border, 2 if sel else 1))
+            p.setBrush(QBrush(fill))
+            p.drawRoundedRect(nt.rect(), 6, 6)
+
+            # the text, as markdown, clipped to the note
+            body = (nt.text or "").strip()
+            if body and nt is not self._note_editing:
+                doc = QTextDocument()
+                doc.setDefaultFont(QFont("monospace", 9))
+                doc.setTextWidth(max(20.0, nt.w - 16))
+                try:
+                    doc.setMarkdown(body)
+                except Exception:
+                    doc.setPlainText(body)
+                p.save()
+                p.setClipRect(nt.rect().adjusted(8, 20, -8, -8))
+                p.translate(nt.x + 8, nt.y + 20)
+                from PyQt6.QtGui import QAbstractTextDocumentLayout
+                ctx = QAbstractTextDocumentLayout.PaintContext()
+                ctx.palette.setColor(ctx.palette.ColorRole.Text,
+                                     QColor(230, 236, 242))
+                doc.documentLayout().draw(p, ctx)
+                p.restore()
+
+            # colour swatch, resize grip and delete badge only on the selected
+            # or hovered note — an unselected note stays clean
+            if sel or nt.rect().contains(self.world(self._mouse)):
+                p.setPen(QPen(border, 1))
+                p.setBrush(QBrush(NOTE_COLORS[nt.color % len(NOTE_COLORS)][1]))
+                p.drawEllipse(nt.color_rect())
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                # grip: two short diagonal ticks in the corner
+                g = nt.grip_rect()
+                p.setPen(QPen(border, 1.5))
+                p.drawLine(int(g.left() + 4), int(g.bottom() - 1),
+                           int(g.right() - 1), int(g.top() + 4))
+                p.drawLine(int(g.left() + 8), int(g.bottom() - 1),
+                           int(g.right() - 1), int(g.top() + 8))
+                # delete badge
+                d = nt.del_rect()
+                p.setPen(QPen(QColor("#ff6b6b"), 1.5))
+                p.drawLine(int(d.left() + 4), int(d.top() + 4),
+                           int(d.right() - 4), int(d.bottom() - 4))
+                p.drawLine(int(d.right() - 4), int(d.top() + 4),
+                           int(d.left() + 4), int(d.bottom() - 4))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+
         for i, (src, oi, dst, ii) in enumerate(self.connections):
             a, b = src.out_port(oi), dst.in_port(ii); sel = (i == self.selected_conn)
             key = (src.name, oi, dst.name, ii)
@@ -750,6 +944,19 @@ class Canvas(QWidget):
         spos = QPointF(e.position()); wpos = self.world(spos)
         if e.button() == Qt.MouseButton.MiddleButton:
             self.panning = True; self.pan_start = spos; return
+        # Right-click on empty canvas drops a note where you clicked. Only on
+        # EMPTY canvas: over a node, a wire or an existing note it does
+        # nothing, so right-click stays free for those to use later.
+        if e.button() == Qt.MouseButton.RightButton:
+            if (self.node_at(wpos) is None and self.note_at(wpos) is None
+                    and self.port_at(wpos) is None
+                    and self.conn_at(wpos) is None):
+                nt = self.add_note(at=wpos)
+                self.editor.mark_changed()
+                # straight into typing — you right-clicked because you have
+                # something to write
+                self.edit_note(nt)
+            return
         for n in self.nodes:
             if n is self.hovered and self.run_rect(n).contains(wpos):
                 self.editor.run_from(n.name); return
@@ -777,6 +984,39 @@ class Canvas(QWidget):
             self._group_drag = None
             self._drag_start_pos = (n.x, n.y)
             self.drag_off = wpos - QPointF(n.x, n.y); self.update(); return
+        # ---- notes: only reached when no node/port/wire took the click ----
+        # A selected note's own controls come first, then its resize corner,
+        # then dragging the body. Notes sit behind nodes and are checked after
+        # them, so a note under a node can never steal that node's click.
+        if self.selected_note is not None and self.selected_note in self.notes:
+            nt = self.selected_note
+            if nt.del_rect().contains(wpos):
+                self.notes.remove(nt)
+                self.selected_note = None
+                self._close_note_editor()
+                self.editor.mark_changed(); self.update(); return
+            if nt.color_rect().contains(wpos):
+                nt.color = (nt.color + 1) % len(NOTE_COLORS)
+                self.editor.mark_changed(); self.update(); return
+        grip = self.note_grip_at(wpos)
+        if grip is not None:
+            self.resizing_note = grip
+            self.selected_note = grip
+            self._close_note_editor()
+            self.update(); return
+        nt = self.note_at(wpos)
+        if nt is not None:
+            self.selected_note = nt
+            self.dragging_note = nt
+            self.note_off = wpos - QPointF(nt.x, nt.y)
+            # bring it to the front of the note layer so overlapping notes
+            # behave the way you'd expect when you click one
+            self.notes.remove(nt); self.notes.append(nt)
+            self._close_note_editor()
+            self.selected = None; self.selected_nodes = set()
+            self.editor.show_node_settings(None)
+            self.update(); return
+
         # click on a hovered/selected connection's delete badge removes it
         for ci_check in (self.hovered_conn, self.selected_conn):
             if ci_check is not None and ci_check < len(self.connections):
@@ -792,20 +1032,38 @@ class Canvas(QWidget):
         # empty space: start a rubber-band box selection
         self.selected = None; self.selected_conn = None
         self.selected_nodes = set()
+        self.selected_note = None
+        self._close_note_editor()
         self._band_start = wpos; self._band_now = wpos
         self.editor.show_node_settings(None); self.update()
 
     def mouseMoveEvent(self, e):
         spos = QPointF(e.position()); self._mouse = spos; wpos = self.world(spos)
         if self.panning:
+            if self._note_editor is not None:
+                self._close_note_editor()
             d = spos - self.pan_start; self.offset += d; self.pan_start = spos; self.update(); return
         new_hover = self.node_at(wpos)
         if new_hover is not self.hovered: self.hovered = new_hover; self.update()
+        # notes show their controls on hover, so moving over one must repaint
+        if self.notes:
+            over = self.note_at(wpos)
+            if over is not getattr(self, "_hover_note", None):
+                self._hover_note = over; self.update()
         # track which connection (if any) the cursor is near, to show a
         # delete badge on its midpoint
         new_chover = self.conn_at(wpos) if new_hover is None else None
         if new_chover is not getattr(self, "hovered_conn", None):
             self.hovered_conn = new_chover; self.update()
+        if self.dragging_note is not None:
+            self.dragging_note.x = (wpos - self.note_off).x()
+            self.dragging_note.y = (wpos - self.note_off).y()
+            self.update(); return
+        if self.resizing_note is not None:
+            nt = self.resizing_note
+            nt.w = max(NOTE_MIN_W, wpos.x() - nt.x)
+            nt.h = max(NOTE_MIN_H, wpos.y() - nt.y)
+            self.update(); return
         if self.dragging:
             gx = (wpos - self.drag_off).x()
             gy = (wpos - self.drag_off).y()
@@ -841,6 +1099,9 @@ class Canvas(QWidget):
         spos = QPointF(e.position()); wpos = self.world(spos)
         if e.button() == Qt.MouseButton.MiddleButton:
             self.panning = False; return
+        if self.dragging_note is not None or self.resizing_note is not None:
+            self.dragging_note = None; self.resizing_note = None
+            self.editor.mark_changed(); self.update(); return
         if self.wire_from:
             hit = self.port_at(wpos)
             if hit and hit[0] == "in" and hit[1] is not self.wire_from[0]:
@@ -869,6 +1130,13 @@ class Canvas(QWidget):
         # Tab is normally consumed by focus traversal; intercept it so the
         # canvas can use it to open the hovered node's quick-edit popup.
         from PyQt6.QtCore import QEvent
+        # Escape while a note editor is open: save and put it away
+        if (e.type() == QEvent.Type.KeyPress
+                and getattr(e, "key", None) is not None
+                and e.key() == Qt.Key.Key_Escape
+                and self._note_editor is not None):
+            self._close_note_editor()
+            return True
         if e.type() == QEvent.Type.KeyPress and e.key() == Qt.Key.Key_Tab:
             target = self.hovered or self.selected
             if target is not None:
@@ -876,17 +1144,50 @@ class Canvas(QWidget):
                 return True
         return super().event(e)
 
+    def eventFilter(self, obj, e):
+        """Watch the note's text box: Escape or losing focus commits it."""
+        from PyQt6.QtCore import QEvent
+        if obj is self._note_editor:
+            if e.type() == QEvent.Type.FocusOut:
+                self._close_note_editor()
+                return False
+            if (e.type() == QEvent.Type.KeyPress
+                    and e.key() == Qt.Key.Key_Escape):
+                self._close_note_editor()
+                return True
+        return super().eventFilter(obj, e)
+
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            # a selected note is deleted by the same key as a selected node
+            if self.selected_note is not None and self.selected_note in self.notes:
+                self.notes.remove(self.selected_note)
+                self.selected_note = None
+                self._close_note_editor()
+                self.editor.mark_changed(); self.update(); return
             self.delete_selected()
         elif e.key() == Qt.Key.Key_Tab:
             target = self.hovered or self.selected
             if target is not None:
                 self.editor.open_node_popup(target)
 
+    NOTE_TYPE = "note.sticky"
+
     def to_workflow(self, name="untitled"):
         nodes = [{"name": n.name, "type": n.type_id, "params": n.params,
                   "_x": n.x, "_y": n.y} for n in self.nodes]
+        # Notes travel in the same nodes list so a workflow stays ONE file and
+        # Deploy/Download carry them without knowing they exist. They have no
+        # connections and the engine skips them by type.
+        for i, nt in enumerate(self.notes, start=1):
+            nodes.append({
+                "name": f"Note {i}",
+                "type": self.NOTE_TYPE,
+                "params": {"text": nt.text},
+                "_x": nt.x, "_y": nt.y,
+                "_w": nt.w, "_h": nt.h,
+                "_color": nt.color,
+            })
         conns = {}
         for src, oi, dst, ii in self.connections:
             conns.setdefault(src.name, []).append({"to": dst.name, "out": oi, "in": ii})
@@ -895,6 +1196,14 @@ class Canvas(QWidget):
     def load_workflow(self, wf, meta_by_type):
         self.clear(); by_name = {}
         for nspec in wf.get("nodes", []):
+            if nspec.get("type") == self.NOTE_TYPE:
+                self.notes.append(CanvasNote(
+                    nspec.get("_x", 80), nspec.get("_y", 80),
+                    nspec.get("_w", 260), nspec.get("_h", 160),
+                    (nspec.get("params") or {}).get("text", ""),
+                    nspec.get("_color", 0),
+                    name=nspec.get("name")))
+                continue
             meta = meta_by_type.get(nspec["type"], {"title": nspec["type"], "inputs": 1, "outputs": 1})
             n = CanvasNode(nspec["type"], meta.get("title", nspec["type"]),
                            meta.get("inputs", 1), meta.get("outputs", 1),

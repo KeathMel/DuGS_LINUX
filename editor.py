@@ -317,6 +317,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
                      "webhook.respond"]),
         ("DATA STORE", ["data.tabel"]),
         ("DEBUG",   ["core.log"]),
+        ("CANVAS",  ["note.sticky"]),
     ]
 
     def load_palette(self):
@@ -749,8 +750,14 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
 
     def drop_node(self, item):
         nd = item.data(Qt.ItemDataRole.UserRole)
-        if nd and not nd.get("__header__"):
-            self.canvas.add_node(nd); self.mark_changed()
+        if not nd or nd.get("__header__"):
+            return
+        # A Note is not a node in the flow — it is a region drawn on the
+        # canvas. It sits in the palette so it is findable in the same place
+        # as everything else, but picking it makes a note, not a node.
+        if nd.get("type") == getattr(self.canvas, "NOTE_TYPE", "note.sticky"):
+            self.canvas.add_note(); self.mark_changed(); return
+        self.canvas.add_node(nd); self.mark_changed()
 
     def refresh_json(self):
         wf = self.canvas.to_workflow(self.current_project or "untitled")
