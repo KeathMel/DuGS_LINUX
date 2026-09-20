@@ -189,10 +189,13 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, payload, is_raw=False):
         if is_raw:
             body = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
-            ctype = "text/plain"
+            ctype = "text/plain; charset=utf-8"
         else:
-            body = json.dumps(payload).encode("utf-8")
-            ctype = "application/json"
+            # ensure_ascii=False so real characters go out as themselves --
+            # the default turns an em dash into the literal \u2014, which
+            # looks like nonsense to anything that just prints the reply
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            ctype = "application/json; charset=utf-8"
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Access-Control-Allow-Origin", "*")
