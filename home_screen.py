@@ -276,6 +276,9 @@ class IconBrowser(QWidget):
         if self.kind == "memory":
             from storage import list_memory_banks
             return list_memory_banks()
+        if self.kind == "semantic":
+            from storage import list_semantic_tables
+            return list_semantic_tables()
         return list_tabels()
 
     def refresh(self):
@@ -284,11 +287,13 @@ class IconBrowser(QWidget):
             # one combined view of Tabels + Memory banks, each item tagged with
             # its real kind so open/delete/icon still do the right thing —
             # exactly how Projects folds Normal and Servo into one grid.
-            from storage import list_memory_banks
+            from storage import list_memory_banks, list_semantic_tables
             for n in list_tabels():
                 self._add_item(n, "tabel")
             for n in list_memory_banks():
                 self._add_item(n, "memory")
+            for n in list_semantic_tables():
+                self._add_item(n, "semantic")
             return
         for n in self.names():
             is_servo = (self.kind == "project" and project_kind(n) == "servo")
@@ -351,12 +356,14 @@ class IconBrowser(QWidget):
     def _dir_of(self, name):
         """Which storage folder an item lives in, respecting its kind so the
         combined Data view can hold both tabels and memory banks."""
-        from storage import MEMORY_DIR
+        from storage import MEMORY_DIR, SEMANTIC_DIR
         k = self._kind_of(name)
         if k == "project":
             return PROJECTS_DIR
         if k == "memory":
             return MEMORY_DIR
+        if k == "semantic":
+            return SEMANTIC_DIR
         return TABELS_DIR
 
     def action(self, label, names):
@@ -422,6 +429,7 @@ class IconBrowser(QWidget):
         k = self._kind_of(name)
         if k == "project": self.app.open_project(name)
         elif k == "memory": self.app.open_memory(name)
+        elif k == "semantic": self.app.open_semantic(name)
         else: self.app.open_tabel(name)
 
 
@@ -2283,7 +2291,8 @@ class Home(QWidget):
             # Data holds both Tabels and Memory banks, so ask which one —
             # the same way New Project asks Normal vs Servo
             choice, ok = QInputDialog.getItem(
-                self, "New", "Create:", ["Tabel", "Memory Bank"], 0, False)
+                self, "New", "Create:",
+                ["Tabel", "Memory Bank", "Semantic Table"], 0, False)
             if not ok:
                 return
             if choice == "Memory Bank":
@@ -2291,6 +2300,13 @@ class Home(QWidget):
                 if ok and name.strip():
                     from storage import new_memory_bank
                     new_memory_bank(name.strip()); self.select("data")
+            elif choice == "Semantic Table":
+                name, ok = QInputDialog.getText(
+                    self, "New Semantic Table", "Table name:")
+                if ok and name.strip():
+                    from storage import new_semantic_table
+                    new_semantic_table(name.strip())
+                    self.app.open_semantic(name.strip())
             else:
                 name, ok = QInputDialog.getText(self, "New Tabel", "Tabel name:")
                 if ok and name.strip():

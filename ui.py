@@ -26,6 +26,7 @@ from storage import PROJECTS_DIR, TABELS_DIR, _ensure
 from home_screen import Home
 from tabel_editor import TabelEditor
 from memory_viewer import MemoryBankViewer
+from semantic_editor import SemanticTableEditor
 from editor import Editor
 
 
@@ -37,7 +38,9 @@ class App(QWidget):
         self.stack = QStackedWidget()
         self.home = Home(self); self.editor = Editor(self); self.tabel = TabelEditor(self)
         self.memory = MemoryBankViewer(self)
-        for w in (self.home, self.editor, self.tabel, self.memory): self.stack.addWidget(w)
+        self.semantic = SemanticTableEditor(self)
+        for w in (self.home, self.editor, self.tabel, self.memory,
+                  self.semantic): self.stack.addWidget(w)
         lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.addWidget(self.stack)
         self.setStyleSheet(STYLESHEET)
         self.go_home()
@@ -58,6 +61,9 @@ class App(QWidget):
 
     def open_memory(self, name):
         self.memory.open(name); self.stack.setCurrentWidget(self.memory)
+
+    def open_semantic(self, name):
+        self.semantic.open(name); self.stack.setCurrentWidget(self.semantic)
 
 
 if __name__ == "__main__":

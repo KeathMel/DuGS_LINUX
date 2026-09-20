@@ -312,12 +312,15 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         ("DATA",    ["core.set", "core.edit_fields", "core.text", "core.code",
                      "core.split_out", "core.aggregate", "core.sort", "core.limit",
                      "core.dedupe", "core.datetime", "core.hash"]),
-        ("FLOW",    ["core.loop", "core.wait", "core.wait_webhook"]),
+        ("FLOW",    ["core.loop", "core.batch", "core.wait", "core.wait_webhook"]),
         ("ACTION",  ["web.http", "action.telegram", "action.discord",
                      "webhook.respond"]),
-        ("DATA STORE", ["data.tabel"]),
+        ("AI",      ["ai.agent", "ai.openrouter"]),
+        ("FILES",   ["file.read", "file.create", "file.edit", "file.delete"]),
+        ("MEMORY",  ["memory.read", "memory.write", "memory.manage"]),
+        ("DATA STORE", ["data.tabel", "data.semantic"]),
         ("DEBUG",   ["core.log"]),
-        ("CANVAS",  ["note.sticky"]),
+        ("CANVAS",  ["note.sticky", "data.notes"]),
     ]
 
     def load_palette(self):

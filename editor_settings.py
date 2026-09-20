@@ -401,6 +401,20 @@ class SettingsPanelMixin:
                     return s
                 widget.currentTextChanged.connect(mktab(key, widget))
 
+            elif ptype == "semantic":
+                widget = QComboBox()
+                from storage import list_semantic_tables
+                tables = list_semantic_tables()
+                widget.addItem("")
+                widget.addItems(tables)
+                if cur and str(cur) in tables:
+                    widget.setCurrentText(str(cur))
+                widget.setStyleSheet(_ps("font-size:13px;"))
+                def mksem(k, w):
+                    def s(): node.params[k] = w.currentText() or None; self.mark_changed()
+                    return s
+                widget.currentTextChanged.connect(mksem(key, widget))
+
             elif ptype == "bool":
                 widget = QCheckBox()
                 widget.setChecked(bool(cur))

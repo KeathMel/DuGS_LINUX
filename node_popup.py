@@ -292,11 +292,14 @@ class NodePopupMixin:
                     def s(): node.params[k] = ww.toPlainText(); self.mark_changed(push_undo=False); rp()
                     return s
                 cb = mk(key, w, refresh_preview); w.textChanged.connect(cb); w._on_change = cb
-            elif ptype in ("tabel", "memory"):
+            elif ptype in ("tabel", "memory", "semantic"):
                 w = QComboBox()
                 if ptype == "tabel":
                     from storage import list_tabels
                     opts = [""] + list_tabels()
+                elif ptype == "semantic":
+                    from storage import list_semantic_tables
+                    opts = [""] + list_semantic_tables()
                 else:
                     from storage import list_memory_banks
                     opts = [""] + list_memory_banks()
