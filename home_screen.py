@@ -55,6 +55,8 @@ DEFAULT_HOME_UI_SETTINGS = {
     "fog_opacity": 150,           # how dark the fog is when see-through (0-255)
     "node_size": 84,              # canvas node square, in px
     "wire_snap": 16,              # how close a dragged wire grabs a port, in px
+    "popup_width": 60,            # node popup width, % of the screen
+    "popup_columns": None,        # last INPUT|PARAMS|OUTPUT split you dragged to
     # --- text ---
     "node_text_scale": 1.0,       # text inside the node popup
     "panel_text_scale": 1.0,      # text in the panels/modules around the canvas
@@ -111,6 +113,15 @@ def pfs(base):
 # kept so anything still importing the old names keeps working
 text_scale = node_text_scale
 set_text_scale = set_node_text_scale
+
+
+def popup_width():
+    """Node popup width as a % of the screen. Read at open time, so a new
+    value applies the next time a popup opens -- no restart."""
+    try:
+        return max(35, min(100, int(load_home_ui_settings().get("popup_width", 60))))
+    except Exception:
+        return 60
 
 
 def node_size():
@@ -838,6 +849,7 @@ class HomeSettingsDialog(QDialog):
         self._panel_color = s.get("panel_color") or GREY_BG
         self._fog_opacity = int(s.get("fog_opacity", 150))
         self._node_size = int(s.get("node_size", 84))
+        self._popup_width = int(s.get("popup_width", 60))
         self._wire_snap = int(s.get("wire_snap", 16))
         self._autosave_enabled = bool(s.get("autosave_enabled", True))
         self._node_text_scale = float(s.get("node_text_scale", s.get("text_scale", 1.0)))
@@ -1076,6 +1088,15 @@ class HomeSettingsDialog(QDialog):
         self.wire_snap_value.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
         self.wire_snap_value.setFixedWidth(46)
 
+        self.popup_width_slider = QSlider(Qt.Orientation.Horizontal)
+        self.popup_width_slider.setRange(35, 100)
+        self.popup_width_slider.setValue(self._popup_width)
+        self.popup_width_slider.setFixedWidth(170)
+        self.popup_width_slider.valueChanged.connect(self._on_popup_width)
+        self.popup_width_value = QLabel(f"{self._popup_width} %")
+        self.popup_width_value.setStyleSheet("color:#8a8a8a;font-family:monospace;font-size:11px;")
+        self.popup_width_value.setFixedWidth(46)
+
         return self._page([
             self._group("NODES"),
             self._row("Node size",
@@ -1087,6 +1108,11 @@ class HomeSettingsDialog(QDialog):
                       "port. Higher catches more easily, lower gives finer "
                       "control on a crowded canvas.",
                       self.wire_snap_slider, self.wire_snap_value),
+            self._row("Node popup width",
+                      "How wide a node's popup opens, as a share of the "
+                      "screen. Inside the popup you can also drag the lines "
+                      "between INPUT, PARAMETERS and OUTPUT to resize them.",
+                      self.popup_width_slider, self.popup_width_value),
             None,
             self._group("CANVAS BACKGROUND"),
             self._row("Background image",
@@ -1170,6 +1196,10 @@ class HomeSettingsDialog(QDialog):
     def _on_autosave_toggle(self, on):
         self._autosave_enabled = bool(on)
 
+    def _on_popup_width(self, v):
+        self._popup_width = int(v)
+        self.popup_width_value.setText(f"{self._popup_width} %")
+
     def _on_node_size(self, v):
         self._node_size = int(v)
         self.node_size_value.setText(f"{self._node_size} px")
@@ -1198,6 +1228,7 @@ class HomeSettingsDialog(QDialog):
         self._panel_color = GREY_BG
         self._fog_opacity = d["fog_opacity"]
         self._node_size = d["node_size"]
+        self._popup_width = d["popup_width"]
         self._node_text_scale = d["node_text_scale"]
         self._panel_text_scale = d["panel_text_scale"]
         self._wire_snap = d["wire_snap"]
@@ -1215,6 +1246,7 @@ class HomeSettingsDialog(QDialog):
             sw.blockSignals(True); sw.setChecked(val); sw.blockSignals(False)
         for sl, val in ((self.fog_slider, self._fog_opacity),
                         (self.node_size_slider, self._node_size),
+                        (self.popup_width_slider, self._popup_width),
                         (self.wire_snap_slider, self._wire_snap),
                         (self.node_text_slider, int(self._node_text_scale * 100)),
                         (self.panel_text_slider, int(self._panel_text_scale * 100))):
@@ -1320,6 +1352,13 @@ class HomeSettingsDialog(QDialog):
         s["panel_color"] = self._panel_color
         s["fog_opacity"] = self._fog_opacity
         s["node_size"] = self._node_size
+        s["popup_width"] = self._popup_width
+        # the popup saves its column split straight to disk when it closes,
+        # but this dialog writes an in-memory copy loaded at startup -- so
+        # re-read that one key first, or saving settings would silently
+        # throw away the column sizes you last dragged to
+        s["popup_columns"] = load_home_ui_settings().get("popup_columns",
+                                                         s.get("popup_columns"))
         s["node_text_scale"] = self._node_text_scale
         s["panel_text_scale"] = self._panel_text_scale
         s["wire_snap"] = self._wire_snap

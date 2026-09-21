@@ -31,7 +31,7 @@ except Exception:
 from node_base import resolve_expr
 from storage import list_credentials
 from editor_widgets import (DragJsonTree, DropLineEdit, DropTextEdit,
-                            ExpandableText, HelpLabel)
+                            ExpandableText, HelpLabel, GripSplitter)
 
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
 from PyQt6.QtCore import QRectF, QPointF
@@ -142,13 +142,20 @@ class NodePopupMixin:
         # big centered modal, roughly half the screen — like n8n's node detail
         scr = dlg.screen().availableGeometry() if dlg.screen() else None
         if scr is not None:
-            w = int(scr.width() * 0.60)
+            # width from the canvas settings ("Node popup width"), clamped
+            # so it can never open narrower than usable or wider than screen
+            try:
+                from home_screen import popup_width
+                pct = popup_width()
+            except Exception:
+                pct = 60
+            w = max(600, min(scr.width(), int(scr.width() * pct / 100)))
             h = scr.height()                       # full height, top to bottom
             dlg.resize(w, h)
             dlg.move(scr.center().x() - w // 2, scr.top())
         else:
             dlg.resize(1000, 900)
-        dlg.setMinimumWidth(820); dlg.setMinimumHeight(460)
+        dlg.setMinimumWidth(600); dlg.setMinimumHeight(460)
         QShortcut(QKeySequence("Escape"), dlg, dlg.accept)
         dlg.setStyleSheet("QDialog{background:#141414;}"
                           "QLabel{color:#ccc;font-family:monospace;}"
@@ -186,7 +193,16 @@ class NodePopupMixin:
         title.mouseDoubleClickEvent = _start_rename
 
         # three columns: INPUT | PARAMS | OUTPUT  (n8n-style)
-        cols = QHBoxLayout(); cols.setSpacing(10)
+        # A GripSplitter, same as the canvas panels: drag the lines between
+        # the columns to resize them. It used to be a fixed 2:3:2 layout, so
+        # a wide INPUT tree could crowd PARAMETERS with no way to fix it.
+        cols = GripSplitter(Qt.Orientation.Horizontal)
+        cols.setChildrenCollapsible(False)     # shrink a column, never lose it
+
+        def _col(box):
+            w = QWidget(); box.setContentsMargins(0, 0, 0, 0); w.setLayout(box)
+            w.setMinimumWidth(140)
+            return w
 
         def col_label(t):
             l = QLabel(t); l.setStyleSheet(f"color:#888;font-family:monospace;font-size:{fs(11)}px;letter-spacing:1px;")
@@ -215,7 +231,7 @@ class NodePopupMixin:
                 ["(run to see input)" if ups else "(no upstream nodes)", ""])
             in_tree.addTopLevelItem(placeholder)
         left_box.addWidget(in_tree, 1)
-        cols.addLayout(left_box, 2)
+        cols.addWidget(_col(left_box))
 
         # ---- MIDDLE: params ----
         mid_box = QVBoxLayout(); mid_box.setSpacing(4)
@@ -369,7 +385,7 @@ class NodePopupMixin:
 
         form.addStretch(1)
         scroll.setWidget(host); mid_box.addWidget(scroll, 1)
-        cols.addLayout(mid_box, 3)
+        cols.addWidget(_col(mid_box))
 
         # ---- RIGHT: this node's own last output ----
         right_box = QVBoxLayout(); right_box.setSpacing(4)
@@ -382,9 +398,34 @@ class NodePopupMixin:
         else:
             out_view.setPlainText("(run the workflow to see output)")
         right_box.addWidget(out_view, 1)
-        cols.addLayout(right_box, 2)
+        cols.addWidget(_col(right_box))
 
-        outer.addLayout(cols, 1)
+        outer.addWidget(cols, 1)
+
+        # restore the split you last dragged to (or the original 2:3:2).
+        # setSizes scales proportionally, so saved pixel widths work as
+        # ratios even when the popup opens at a different width.
+        try:
+            from home_screen import load_home_ui_settings, save_home_ui_settings
+            saved = load_home_ui_settings().get("popup_columns")
+        except Exception:
+            saved = None
+        if (isinstance(saved, list) and len(saved) == 3
+                and all(isinstance(x, int) and x > 0 for x in saved)):
+            cols.setSizes(saved)
+        else:
+            cols.setSizes([200, 300, 200])
+
+        def _remember_columns(*_):
+            try:
+                sizes = cols.sizes()
+                if len(sizes) == 3 and all(x > 0 for x in sizes):
+                    st = load_home_ui_settings()
+                    st["popup_columns"] = sizes
+                    save_home_ui_settings(st)
+            except Exception:
+                pass
+        dlg.finished.connect(_remember_columns)
 
         # ---- mini-canvas strip: the whole graph in miniature, with THIS node
         # marked, so you can see where you are while the detail is open ----

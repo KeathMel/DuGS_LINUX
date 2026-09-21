@@ -22,8 +22,8 @@ class _GripHandle(QSplitterHandle):
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), _QColor("#242424"))
-        p.setBrush(_QColor("#888")); p.setPen(Qt.PenStyle.NoPen)
+        p.fillRect(self.rect(), QColor("#242424"))
+        p.setBrush(QColor("#888")); p.setPen(Qt.PenStyle.NoPen)
         cx = self.width() / 2; cy = self.height() / 2
         if self.orientation() == Qt.Orientation.Horizontal:
             for dy in (-7, 0, 7):

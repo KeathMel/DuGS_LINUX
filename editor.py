@@ -308,7 +308,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
 
     # normal-node sub-groups for the NODES section (non-servo projects)
     NODE_GROUPS = [
-        ("LOGIC",   ["logic.if", "logic.switch", "logic.filter", "core.merge"]),
+        ("LOGIC",   ["logic.if", "logic.keywords", "logic.switch", "logic.filter", "core.merge"]),
         ("DATA",    ["core.set", "core.edit_fields", "core.text", "core.code",
                      "core.split_out", "core.aggregate", "core.sort", "core.limit",
                      "core.dedupe", "core.datetime", "core.hash"]),
