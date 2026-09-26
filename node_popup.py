@@ -308,6 +308,24 @@ class NodePopupMixin:
                     def s(): node.params[k] = ww.toPlainText(); self.mark_changed(push_undo=False); rp()
                     return s
                 cb = mk(key, w, refresh_preview); w.textChanged.connect(cb); w._on_change = cb
+            elif ptype == "filter_rules":
+                from switch_rules_widget import ConditionRowsWidget
+                w = ConditionRowsWidget(node, accent=ACCENT, key=key)
+                w.changed.connect(lambda: self.mark_changed())
+
+            elif ptype in ("kv_rows", "kv_dict"):
+                from switch_rules_widget import KeyValueRowsWidget
+                w = KeyValueRowsWidget(
+                    node, accent=ACCENT, key=key, as_dict=(ptype == "kv_dict"),
+                    name_hint=p.get("name_hint", "name"),
+                    value_hint=p.get("value_hint", "value"))
+                w.changed.connect(lambda: self.mark_changed())
+
+            elif ptype == "switch_rules":
+                from switch_rules_widget import SwitchRulesWidget
+                w = SwitchRulesWidget(node, accent=ACCENT)
+                w.changed.connect(lambda: (self.mark_changed(), self.canvas.update()))
+
             elif ptype in ("tabel", "memory", "semantic"):
                 w = QComboBox()
                 if ptype == "tabel":

@@ -188,8 +188,15 @@ class CanvasNode:
 
     def n_outputs(self):
         if self.type_id == "logic.switch":
-            try: n = max(1, int(self.params.get("num_outputs", 4) or 4))
-            except (TypeError, ValueError): n = 4
+            # num_outputs is kept in step by the rules editor. When it is
+            # absent (a node just dropped on the canvas, never opened) fall
+            # back to counting the rules, so the ports match what you see.
+            rules = self.params.get("rules")
+            if self.params.get("num_outputs") is None and isinstance(rules, list):
+                n = max(1, len(rules))
+            else:
+                try: n = max(1, int(self.params.get("num_outputs", 4) or 4))
+                except (TypeError, ValueError): n = 4
             if self.params.get("fallback") == "extra":
                 n += 1
             return n

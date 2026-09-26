@@ -426,6 +426,29 @@ class SettingsPanelMixin:
                     return s
                 widget.stateChanged.connect(mkbool(key, widget))
 
+            elif ptype == "filter_rules":
+                from switch_rules_widget import ConditionRowsWidget
+                widget = ConditionRowsWidget(node, accent=ACCENT, key=key)
+                widget.changed.connect(lambda: self.mark_changed())
+
+            elif ptype in ("kv_rows", "kv_dict"):
+                from switch_rules_widget import KeyValueRowsWidget
+                widget = KeyValueRowsWidget(
+                    node, accent=ACCENT, key=key, as_dict=(ptype == "kv_dict"),
+                    name_hint=p.get("name_hint", "name"),
+                    value_hint=p.get("value_hint", "value"))
+                widget.changed.connect(lambda: self.mark_changed())
+
+            elif ptype == "switch_rules":
+                from switch_rules_widget import SwitchRulesWidget
+                widget = SwitchRulesWidget(node, accent=ACCENT)
+                def mkrules(w):
+                    def s():
+                        self.mark_changed()
+                        self.canvas.update()   # port count may have changed
+                    return s
+                widget.changed.connect(mkrules(widget))
+
             elif ptype == "json":
                 widget = QPlainTextEdit(json.dumps(cur, indent=2) if cur is not None else "")
                 widget.setFixedHeight(80); widget.setStyleSheet(_ps("font-size:11px;"))
