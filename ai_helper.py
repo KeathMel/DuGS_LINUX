@@ -32,8 +32,13 @@ def _add_tokens(n):
 
 
 def chat(api_key, prompt, system="", model="gpt-4o-mini",
-         base_url="https://api.openai.com/v1", temperature=0.3, timeout=60):
+         base_url="https://api.openai.com/v1", temperature=0.3, timeout=60,
+         max_tokens=None, extra_headers=None):
     """One chat completion. Returns (text, tokens_used_this_call).
+
+    max_tokens caps this single reply when given. extra_headers is merged in
+    on top of the standard ones -- OpenRouter wants an HTTP-Referer header
+    that other OpenAI-compatible providers don't.
 
     Raises on network/HTTP errors so the caller can surface them.
     """
@@ -42,15 +47,21 @@ def chat(api_key, prompt, system="", model="gpt-4o-mini",
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    body = json.dumps({
+    payload = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
-    }).encode()
-    req = urllib.request.Request(url, data=body, headers={
+    }
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    body = json.dumps(payload).encode()
+    headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
-    })
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(url, data=body, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read().decode())
     text = data["choices"][0]["message"]["content"]
