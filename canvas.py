@@ -2,6 +2,7 @@
 canvas.py — the node-graph editor surface: CanvasNode (visual model for a
 node) and Canvas (the QWidget that draws/drags/wires nodes together).
 """
+import json
 import os
 from PyQt6.QtWidgets import QWidget, QPlainTextEdit
 from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, QSize
@@ -16,6 +17,24 @@ except Exception:
     _HAS_SVG = False
 
 from theme import ACCENT, NODE_SIZE
+
+# Output ports that always mean the same thing get a word instead of a number.
+# "0" and "1" tell you nothing on a glance; "true" and "false" do. Switch is
+# NOT in here -- its route names come from the node's own params, so renaming
+# a route in the settings popup renames the port on the canvas too.
+OUTPUT_PORT_LABELS = {
+    "logic.if":       ["true", "false"],
+    "logic.keywords": ["true", "false"],
+    "core.loop":      ["loop", "done"],
+}
+
+# a label worth colouring: green for the pass branch, red for the fail branch
+PORT_LABEL_COLOURS = {
+    "true":  "#7CFC9B",
+    "false": "#ff6b6b",
+    "done":  "#7CFC9B",
+    "else":  "#888888",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +235,39 @@ class CanvasNode:
 
     def out_port(self, idx=0):
         return QPointF(self.x + self.s, self._port_y(idx, self.n_outputs()))
+
+    # ---- what each output port actually means ----------------------------
+    def output_label(self, idx):
+        """The word to draw beside output port `idx`, or "" to leave it bare.
+
+        Checked in this order so the most specific thing wins:
+          1. output_names on the node's own params -- what the Switch rules
+             editor writes, so a renamed route renames the port
+          2. the fixed table above, for nodes whose ports never change meaning
+          3. nothing, and the port keeps its number
+        """
+        names = self.params.get("output_names")
+        if isinstance(names, str):
+            try:
+                names = json.loads(names)
+            except Exception:
+                names = None
+        if isinstance(names, list) and 0 <= idx < len(names):
+            nm = str(names[idx] or "").strip()
+            if nm:
+                return nm
+
+        if self.type_id == "logic.switch":
+            # the catch-all port is appended AFTER the named routes, so it
+            # never has a name of its own to look up
+            if self.params.get("fallback") == "extra" and idx == self.n_outputs() - 1:
+                return "else"
+            return ""
+
+        fixed = OUTPUT_PORT_LABELS.get(self.type_id)
+        if fixed and 0 <= idx < len(fixed):
+            return fixed[idx]
+        return ""
 
 
 NOTE_COLORS = [
@@ -923,6 +975,18 @@ class Canvas(QWidget):
                     p.setPen(QColor("#000")); f3 = QFont("monospace"); f3.setPointSize(5); f3.setBold(True); p.setFont(f3)
                     lbl = "OUT" if no == 1 else str(i)
                     p.drawText(QRectF(n.x + n.s, n.out_port(i).y() - 6, 16, 12), Qt.AlignmentFlag.AlignCenter, lbl)
+                    # the port's MEANING, out to the right of the circle and
+                    # lifted above the wire so the two don't overlap. Hidden
+                    # when zoomed out, where it would just be noise.
+                    port_name = n.output_label(i)
+                    if port_name and self.scale >= 0.55:
+                        p.setPen(QColor(PORT_LABEL_COLOURS.get(port_name.lower(), ACCENT)))
+                        f4 = QFont("monospace"); f4.setPointSize(7); f4.setBold(True)
+                        p.setFont(f4)
+                        p.drawText(
+                            QRectF(n.x + n.s + 11, n.out_port(i).y() - 17, 140, 12),
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                            port_name[:18])
             p.setPen(QPen(QColor(ACCENT), 1)); p.setBrush(QBrush(QColor(ACCENT)))
             if n is self.hovered:
                 dr = n.del_rect()
