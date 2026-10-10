@@ -295,6 +295,13 @@ class NodePopupMixin:
                                 else "= (no upstream data yet)")
             return lbl, refresh
 
+        # Every field's "write this back to the node" callback, so they can
+        # all be fired when the popup closes. Text and number boxes commit on
+        # editingFinished, which only happens when the field loses focus --
+        # type a value and close the popup straight away and it was silently
+        # thrown away, with nothing for autosave to save.
+        commit_fns = []
+
         # one editor per param (text/number/multiline/select/bool)
         for p in params_spec:
             key = p["key"]; ptype = p.get("type", "text")
@@ -379,6 +386,12 @@ class NodePopupMixin:
                 cb = mkt(key, w, refresh_preview); w.editingFinished.connect(cb); w._on_change = cb
                 # also live-update the preview as you type/drop, not just on commit
                 w.textChanged.connect(refresh_preview)
+            # remember how to commit this field, whatever kind it is
+            if callable(getattr(w, "_on_change", None)):
+                commit_fns.append(w._on_change)
+            elif callable(getattr(w, "_write", None)):
+                commit_fns.append(w._write)
+
             # each parameter as its own block: label (with hover help) on top,
             # the field under it, and the resolved-value preview under that
             row_label = p.get("label", key)
@@ -405,62 +418,16 @@ class NodePopupMixin:
         scroll.setWidget(host); mid_box.addWidget(scroll, 1)
         cols.addWidget(_col(mid_box))
 
-        # ---- RIGHT: this node's own output ----
-        # A node inside a loop runs more than once, and each pass sees
-        # different data -- that IS the loop. Showing only the last one hides
-        # the bit you opened this panel to look at, so when there is more than
-        # one activation you get a row of buttons to step between them.
+        # ---- RIGHT: this node's own last output ----
         right_box = QVBoxLayout(); right_box.setSpacing(4)
         right_box.addWidget(col_label("OUTPUT"))
-
-        history = list(getattr(self, "_run_history", {}).get(node.name) or [])
         own = self._last_results.get(node.name)
-        if not history and own:
-            history = [own]
-
         out_view = QPlainTextEdit(); out_view.setReadOnly(True)
         out_view.setStyleSheet(f"color:#9fb;font-size:{fs(10)}px;")
-
-        def _show_pass(idx):
-            try:
-                data = history[idx]
-            except (IndexError, TypeError):
-                data = None
-            if data:
-                out_view.setPlainText(json.dumps(data[:3], indent=2))
-            else:
-                out_view.setPlainText("(this activation produced nothing)")
-
-        if len(history) > 1:
-            picker_row = QHBoxLayout(); picker_row.setSpacing(3)
-            lbl = QLabel("activation")
-            lbl.setStyleSheet(f"color:#888;font-size:{fs(9)}px;")
-            picker_row.addWidget(lbl)
-            buttons = []
-
-            def _pick(i):
-                _show_pass(i)
-                for k, b in enumerate(buttons):
-                    b.setStyleSheet(
-                        f"font-size:{fs(9)}px;padding:1px 6px;"
-                        + (f"color:#000;background:{ACCENT};"
-                           if k == i else "color:#9fb;background:transparent;"))
-
-            for i in range(len(history)):
-                b = QPushButton(str(i + 1))
-                b.setFixedHeight(18)
-                b.setMaximumWidth(34)
-                b.clicked.connect(lambda _=False, i=i: _pick(i))
-                buttons.append(b)
-                picker_row.addWidget(b)
-            picker_row.addStretch(1)
-            right_box.addLayout(picker_row)
-            _pick(len(history) - 1)        # open on the most recent pass
-        elif history:
-            _show_pass(0)
+        if own:
+            out_view.setPlainText(json.dumps(own[:3], indent=2))
         else:
             out_view.setPlainText("(run the workflow to see output)")
-
         right_box.addWidget(out_view, 1)
         cols.addWidget(_col(right_box))
 
@@ -490,6 +457,24 @@ class NodePopupMixin:
             except Exception:
                 pass
         dlg.finished.connect(_remember_columns)
+
+        def _commit_everything(*_):
+            """Closing the popup counts as finishing your edit.
+
+            Without this, the last box you typed in never fired its commit
+            and the value went nowhere -- the single most confusing way for
+            an editor to lose a change, because everything LOOKED typed.
+            """
+            touched = False
+            for fn in commit_fns:
+                try:
+                    fn()
+                    touched = True
+                except Exception:
+                    pass
+            if touched:
+                self.mark_changed(push_undo=False)
+        dlg.finished.connect(_commit_everything)
 
         # ---- mini-canvas strip: the whole graph in miniature, with THIS node
         # marked, so you can see where you are while the detail is open ----

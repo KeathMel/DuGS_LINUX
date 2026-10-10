@@ -100,7 +100,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
     def __init__(self, app):
         super().__init__()
         self.app = app; self.current_project = None; self.meta_by_type = {}
-        self._last_results = {}        # node name -> ports (kept after a run)
+        self._last_results = {}        # node name -> this run's output
         # node name -> [output of pass 1, output of pass 2, ...]. A looped node
         # runs more than once and each pass sees different data; keeping only
         # the last one hides exactly the thing you opened the panel to look at.
@@ -1156,6 +1156,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             self.results.clear()
             self._append_result(f"⚡ webhook fired → running '{wf}'")
             self._run_history.clear()
+            self._last_results.clear()
             self.canvas.run_states.clear(); self.canvas.edge_counts.clear()
             self.canvas.running_node = None; self.canvas.update()
             return
@@ -1180,6 +1181,12 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         if kind == "start":
             c.run_states.clear(); c.edge_counts.clear()
             self._run_history.clear()
+            # ...and the per-node outputs too. These used to survive from one
+            # run to the next, so a node skipped on an untaken branch quietly
+            # kept showing the output it produced on some EARLIER run -- data
+            # that looks current and isn't. Nothing shown is now older than
+            # the run you are looking at.
+            self._last_results.clear()
             c.running_node = None; c.active_edge = None
             c.update()
         elif kind == "node_running":
@@ -1193,9 +1200,10 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
             # keep this node's output sample so the I/O panel can show it
             self._last_results[evt["node"]] = evt.get("sample", [])
             # ...and keep the earlier passes too, so a looped node can be
-            # stepped through activation by activation
+            # stepped through activation by activation. The input rides along
+            # so the viewer can subtract it and show only what this node made.
             self._run_history.setdefault(evt["node"], []).append(
-                evt.get("sample", []))
+                {"out": evt.get("sample", []), "in": evt.get("in_sample", [])})
             ms = evt.get("ms", 0)
             
             # Extract tokens_used from first sample item if present. Guard

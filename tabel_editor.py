@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QTableWidget,
     QTableWidgetItem, QHeaderView, QInputDialog, QMenu
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
 
 from theme import DIM
@@ -48,14 +48,25 @@ class TabelEditor(QWidget):
         self.table.itemChanged.connect(self._cell_changed)
         root.addWidget(self.table, 1)
 
-        self.hint = QLabel("double-click a header to rename a column · right-click a row number to delete")
+        self.hint = QLabel("double-click a header to rename · right-click a header to delete a column "
+                           "· right-click a row number to delete the row · saves as you go")
         self.hint.setStyleSheet(f"color:{DIM};font-family:monospace;font-size:9px;")
         root.addWidget(self.hint)
 
         self.table.horizontalHeader().sectionDoubleClicked.connect(self.rename_column)
+        self.table.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.horizontalHeader().customContextMenuRequested.connect(self.col_menu)
         self.table.verticalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.verticalHeader().customContextMenuRequested.connect(self.row_menu)
         self._loading = False
+
+        # typed cells are written back a moment after you stop, so a Tabel
+        # behaves like a spreadsheet instead of a form you have to remember
+        # to submit
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self._autosave)
 
         # settings gear, pinned bottom-left — same popup as the home screen
         bottom_bar = QHBoxLayout()
@@ -130,12 +141,32 @@ class TabelEditor(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._loading = False
 
+    # -- saving ----------------------------------------------------------
+    def _autosave(self):
+        """Write the Tabel out now.
+
+        Adding a column, renaming one, adding or deleting a row used to
+        change only the copy in memory and wait for the Save button. But
+        open() reloads from disk, so clicking a different Tabel and coming
+        back threw the work away without a word -- the single most annoying
+        way for an editor to lose your data. Every structural change now
+        persists the moment it happens, and typed cells follow a moment
+        later.
+        """
+        if not self.current:
+            return
+        try:
+            save_tabel(self.current, self.data)
+        except Exception as e:
+            self.app.toast(f"could not save Tabel: {e}")
+
     def _cell_changed(self, item):
         if self._loading: return
         cols = self.data["columns"]
         ri, ci = item.row(), item.column()
         if ri < len(self.data["rows"]) and ci < len(cols):
             self.data["rows"][ri][cols[ci]] = item.text()
+            self._save_timer.start()
 
     def add_column(self):
         name, ok = QInputDialog.getText(self, "New Column", "Column name:")
@@ -144,12 +175,12 @@ class TabelEditor(QWidget):
             if name in self.data["columns"] or name == "id": return
             self.data["columns"].append(name)
             for r in self.data["rows"]: r[name] = ""
-            self.rebuild()
+            self.rebuild(); self._autosave()
 
     def add_row(self):
         row = {"id": len(self.data["rows"]) + 1}
         for c in self.data["columns"]: row[c] = ""
-        self.data["rows"].append(row); self.rebuild()
+        self.data["rows"].append(row); self.rebuild(); self._autosave()
 
     def rename_column(self, idx):
         cols = self.data["columns"]
@@ -161,7 +192,33 @@ class TabelEditor(QWidget):
             cols[idx] = new
             for r in self.data["rows"]:
                 r[new] = r.pop(old, "")
-            self.rebuild()
+            self.rebuild(); self._autosave()
+
+    def col_menu(self, pos):
+        """Right-click a header: rename or delete that column. Deleting one
+        was simply not possible before -- you could add and rename, and then
+        live with the mistake forever."""
+        ci = self.table.horizontalHeader().logicalIndexAt(pos)
+        cols = self.data.get("columns", [])
+        if ci < 0 or ci >= len(cols):
+            return
+        m = QMenu(self)
+        ren = QAction(f"Rename '{cols[ci]}'", self)
+        ren.triggered.connect(lambda: self.rename_column(ci))
+        m.addAction(ren)
+        dele = QAction(f"Delete column '{cols[ci]}'", self)
+        dele.triggered.connect(lambda: self._del_column(ci))
+        m.addAction(dele)
+        m.exec(self.table.horizontalHeader().mapToGlobal(pos))
+
+    def _del_column(self, ci):
+        cols = self.data.get("columns", [])
+        if not (0 <= ci < len(cols)):
+            return
+        name = cols.pop(ci)
+        for r in self.data.get("rows", []):
+            r.pop(name, None)
+        self.rebuild(); self._autosave()
 
     def row_menu(self, pos):
         ri = self.table.verticalHeader().logicalIndexAt(pos)
@@ -174,10 +231,13 @@ class TabelEditor(QWidget):
 
     def _del_row(self, ri):
         if 0 <= ri < len(self.data["rows"]):
-            del self.data["rows"][ri]; self.rebuild()
+            del self.data["rows"][ri]; self.rebuild(); self._autosave()
 
     def save(self):
+        # everything saves itself now; this stays as the deliberate
+        # "write it out and show me what is actually on disk" button
         if not self.current: return
+        self._save_timer.stop()
         save_tabel(self.current, self.data)
         self.open(self.current)
         self.app.toast(f"saved Tabel {self.current}")

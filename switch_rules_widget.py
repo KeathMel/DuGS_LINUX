@@ -339,10 +339,18 @@ class KeyValueRowsWidget(QWidget):
     changed = pyqtSignal()
 
     def __init__(self, node, accent="#7ecfff", key="assignments",
-                 as_dict=False, name_hint="name", value_hint="value"):
+                 as_dict=False, name_hint="name", value_hint="value",
+                 key_choices=None):
         super().__init__()
         self.node, self.accent, self.key = node, accent, key
         self.as_dict, self.name_hint, self.value_hint = as_dict, name_hint, value_hint
+        # When the left-hand side can only sensibly be one of a known set --
+        # the columns of the Tabel this node points at -- offer them as a
+        # dropdown instead of a name you have to spell exactly right. Still
+        # typable, so an expression, or a column you are about to create, is
+        # not locked out.
+        self.key_choices = (key_choices if key_choices is not None
+                            else self._auto_choices())
         self._rows = []
         self._root = QVBoxLayout(self)
         self._root.setContentsMargins(0, 0, 0, 0); self._root.setSpacing(4)
@@ -357,6 +365,33 @@ class KeyValueRowsWidget(QWidget):
             f"QPushButton:hover{{background:rgba(255,255,255,0.08);}}")
         self._root.addWidget(self.add_btn)
         self._load()
+
+    def _auto_choices(self):
+        """The columns of the Tabel this node points at, if it is a Tabel
+        node. Silent about every failure: an unset or missing Tabel just
+        means you type the name, exactly as before."""
+        if str(getattr(self.node, "type_id", "")) != "data.tabel":
+            return []
+        name = (getattr(self.node, "params", None) or {}).get("tabel")
+        if not name:
+            return []
+        try:
+            from storage import load_tabel
+            return [str(c) for c in (load_tabel(name).get("columns") or [])]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _text_of(w):
+        """A QLineEdit and an editable QComboBox spell this differently."""
+        return w.currentText() if hasattr(w, "currentText") else w.text()
+
+    @staticmethod
+    def _clear_text(w):
+        if hasattr(w, "clearEditText"):
+            w.clearEditText()
+        else:
+            w.clear()
 
     def _css(self):
         return ("background:rgba(20,20,20,0.6);color:#fff;border:1px solid #555;"
@@ -378,12 +413,13 @@ class KeyValueRowsWidget(QWidget):
         if self.as_dict:
             out = {}
             for r in self._rows:
-                k = r["name"].text().strip()
+                k = self._text_of(r["name"]).strip()
                 if k:
                     out[k] = r["value"].text()
         else:
-            out = [{"name": r["name"].text().strip(), "value": r["value"].text()}
-                   for r in self._rows if r["name"].text().strip()]
+            out = [{"name": self._text_of(r["name"]).strip(),
+                    "value": r["value"].text()}
+                   for r in self._rows if self._text_of(r["name"]).strip()]
         self.node.params[self.key] = out
         self.changed.emit()
 
@@ -391,8 +427,17 @@ class KeyValueRowsWidget(QWidget):
         line = QWidget()
         box = QHBoxLayout(line)
         box.setContentsMargins(0, 0, 0, 0); box.setSpacing(4)
-        n = QLineEdit(str(name or "")); n.setPlaceholderText(self.name_hint)
-        n.setStyleSheet(self._css()); n.editingFinished.connect(self._write)
+        if self.key_choices:
+            n = QComboBox(); n.setEditable(True)
+            n.addItems(self.key_choices)
+            n.setCurrentText(str(name or ""))
+            n.lineEdit().setPlaceholderText(self.name_hint)
+            n.setStyleSheet(self._css())
+            n.currentIndexChanged.connect(lambda _=0: self._write())
+            n.lineEdit().editingFinished.connect(self._write)
+        else:
+            n = QLineEdit(str(name or "")); n.setPlaceholderText(self.name_hint)
+            n.setStyleSheet(self._css()); n.editingFinished.connect(self._write)
         v = QLineEdit(str(value if value is not None else ""))
         v.setPlaceholderText(self.value_hint)
         v.setStyleSheet(self._css()); v.editingFinished.connect(self._write)
@@ -407,7 +452,8 @@ class KeyValueRowsWidget(QWidget):
 
     def _remove(self, row):
         if len(self._rows) <= 1:
-            row["name"].clear(); row["value"].clear(); self._write(); return
+            self._clear_text(row["name"]); row["value"].clear()
+            self._write(); return
         self._rows.remove(row)
         row["line"].setParent(None); row["line"].deleteLater()
         self._write()
