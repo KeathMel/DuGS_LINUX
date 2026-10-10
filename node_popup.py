@@ -405,16 +405,62 @@ class NodePopupMixin:
         scroll.setWidget(host); mid_box.addWidget(scroll, 1)
         cols.addWidget(_col(mid_box))
 
-        # ---- RIGHT: this node's own last output ----
+        # ---- RIGHT: this node's own output ----
+        # A node inside a loop runs more than once, and each pass sees
+        # different data -- that IS the loop. Showing only the last one hides
+        # the bit you opened this panel to look at, so when there is more than
+        # one activation you get a row of buttons to step between them.
         right_box = QVBoxLayout(); right_box.setSpacing(4)
         right_box.addWidget(col_label("OUTPUT"))
+
+        history = list(getattr(self, "_run_history", {}).get(node.name) or [])
         own = self._last_results.get(node.name)
+        if not history and own:
+            history = [own]
+
         out_view = QPlainTextEdit(); out_view.setReadOnly(True)
         out_view.setStyleSheet(f"color:#9fb;font-size:{fs(10)}px;")
-        if own:
-            out_view.setPlainText(json.dumps(own[:3], indent=2))
+
+        def _show_pass(idx):
+            try:
+                data = history[idx]
+            except (IndexError, TypeError):
+                data = None
+            if data:
+                out_view.setPlainText(json.dumps(data[:3], indent=2))
+            else:
+                out_view.setPlainText("(this activation produced nothing)")
+
+        if len(history) > 1:
+            picker_row = QHBoxLayout(); picker_row.setSpacing(3)
+            lbl = QLabel("activation")
+            lbl.setStyleSheet(f"color:#888;font-size:{fs(9)}px;")
+            picker_row.addWidget(lbl)
+            buttons = []
+
+            def _pick(i):
+                _show_pass(i)
+                for k, b in enumerate(buttons):
+                    b.setStyleSheet(
+                        f"font-size:{fs(9)}px;padding:1px 6px;"
+                        + (f"color:#000;background:{ACCENT};"
+                           if k == i else "color:#9fb;background:transparent;"))
+
+            for i in range(len(history)):
+                b = QPushButton(str(i + 1))
+                b.setFixedHeight(18)
+                b.setMaximumWidth(34)
+                b.clicked.connect(lambda _=False, i=i: _pick(i))
+                buttons.append(b)
+                picker_row.addWidget(b)
+            picker_row.addStretch(1)
+            right_box.addLayout(picker_row)
+            _pick(len(history) - 1)        # open on the most recent pass
+        elif history:
+            _show_pass(0)
         else:
             out_view.setPlainText("(run the workflow to see output)")
+
         right_box.addWidget(out_view, 1)
         cols.addWidget(_col(right_box))
 

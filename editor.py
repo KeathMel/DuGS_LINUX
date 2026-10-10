@@ -101,6 +101,10 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         super().__init__()
         self.app = app; self.current_project = None; self.meta_by_type = {}
         self._last_results = {}        # node name -> ports (kept after a run)
+        # node name -> [output of pass 1, output of pass 2, ...]. A looped node
+        # runs more than once and each pass sees different data; keeping only
+        # the last one hides exactly the thing you opened the panel to look at.
+        self._run_history = {}
         self._last_inputs = {}         # node name -> items that entered it
         # The window is one vertical stack: a full-width TOP BAR across the
         # top, and everything else below it. Panels therefore start under the
@@ -1151,6 +1155,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         if kind == "webhook_run_start":
             self.results.clear()
             self._append_result(f"⚡ webhook fired → running '{wf}'")
+            self._run_history.clear()
             self.canvas.run_states.clear(); self.canvas.edge_counts.clear()
             self.canvas.running_node = None; self.canvas.update()
             return
@@ -1174,6 +1179,7 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         c = self.canvas
         if kind == "start":
             c.run_states.clear(); c.edge_counts.clear()
+            self._run_history.clear()
             c.running_node = None; c.active_edge = None
             c.update()
         elif kind == "node_running":
@@ -1186,6 +1192,10 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
                 c.running_node = None
             # keep this node's output sample so the I/O panel can show it
             self._last_results[evt["node"]] = evt.get("sample", [])
+            # ...and keep the earlier passes too, so a looped node can be
+            # stepped through activation by activation
+            self._run_history.setdefault(evt["node"], []).append(
+                evt.get("sample", []))
             ms = evt.get("ms", 0)
             
             # Extract tokens_used from first sample item if present. Guard
@@ -1202,6 +1212,9 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
                 log_line = f"{evt['node']}  →  {evt.get('items_out', 0)} item(s)  ({ms:.0f} ms)  [Tokens used: {tokens_used}]"
             else:
                 log_line = f"{evt['node']}  →  {evt.get('items_out', 0)} item(s)  ({ms:.0f} ms)"
+            n_pass = evt.get("pass") or 0
+            if n_pass > 1:
+                log_line += f"   (activation {n_pass})"
             
             self._append_result(log_line)
             # if this node is the one open in settings, refresh its I/O view
