@@ -41,6 +41,92 @@ webhook_registry: dict[str, dict] = {}
 
 PROJECTS_DIR = os.path.join(HERE, "projects")
 
+# ---- posted files ---------------------------------------------------------
+# Anything POSTed that is NOT text lands here as a real file. A voice note
+# used to be decoded as UTF-8 with errors="replace", which turns every byte
+# that is not valid UTF-8 into U+FFFD -- the audio was destroyed before any
+# node could see it, and there was nothing for Speech to Text to point at.
+UPLOADS_DIR = os.path.join(HERE, "uploads")
+UPLOAD_KEEP_HOURS = 24
+
+_BINARY_EXT = {
+    "audio/webm": ".webm", "audio/ogg": ".ogg", "audio/opus": ".opus",
+    "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav",
+    "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/aac": ".aac",
+    "audio/flac": ".flac", "audio/amr": ".amr", "video/webm": ".webm",
+    "image/png": ".png", "image/jpeg": ".jpg", "application/pdf": ".pdf",
+}
+
+
+def _looks_textual(ctype):
+    c = (ctype or "").lower()
+    if not c:
+        return True
+    return any(h in c for h in ("json", "text/", "xml", "x-www-form-urlencoded",
+                                "javascript", "yaml", "csv"))
+
+
+def _sweep_uploads():
+    """Received files are working data, not archives. Drop the old ones."""
+    import time as _t
+    cutoff = _t.time() - UPLOAD_KEEP_HOURS * 3600
+    try:
+        for f in os.listdir(UPLOADS_DIR):
+            fp = os.path.join(UPLOADS_DIR, f)
+            try:
+                if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
+                    os.remove(fp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _save_upload(blob, ctype):
+    """Write a posted non-text body to disk and say where it went."""
+    import time as _t
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    _sweep_uploads()
+    base = (ctype or "").split(";")[0].strip().lower()
+    ext = _BINARY_EXT.get(base, ".bin")
+    name = "upload_%d%s" % (int(_t.time() * 1000), ext)
+    path = os.path.join(UPLOADS_DIR, name)
+    with open(path, "wb") as fh:
+        fh.write(blob)
+    return path, name
+
+
+def body_for_item(raw, ctype):
+    """Turn a posted body into something a node can actually use.
+
+    JSON -> dict, exactly as before.
+    Text -> the string, exactly as before.
+    Anything else -> written to uploads/, and the item gets the PATH:
+
+        {"audio_path": ".../uploads/upload_1760000000000.webm",
+         "content_type": "audio/webm", "bytes": 48213, "is_binary": True}
+
+    so Speech to Text reads it with source "file path" and
+    {{ $json.body.audio_path }}.
+    """
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    if _looks_textual(ctype):
+        return raw.decode("utf-8", errors="replace")
+    try:
+        path, name = _save_upload(raw, ctype)
+    except Exception as e:
+        print(f"  [warn] could not save upload: {e}")
+        return {"error": f"could not save the posted file: {e}",
+                "content_type": ctype, "bytes": len(raw)}
+    print(f"  [upload] {name} ({len(raw)} bytes, {ctype or 'no type'})")
+    return {"audio_path": path, "file_path": path, "filename": name,
+            "content_type": ctype, "bytes": len(raw), "is_binary": True}
+
 # ---- paused runs (Wait for Webhook): kept in memory AND on disk so a resume
 # call works even if it lands on a fresh process ----
 _paused_runs: dict = {}
@@ -186,10 +272,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("  api: " + (fmt % args) + "\n")
 
-    def _send(self, code: int, payload, is_raw=False):
+    def _send(self, code: int, payload, is_raw=False, ctype=None):
         if is_raw:
             body = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
-            ctype = "text/plain; charset=utf-8"
+            ctype = ctype or "text/plain; charset=utf-8"
         else:
             # ensure_ascii=False so real characters go out as themselves --
             # the default turns an em dash into the literal \u2014, which
@@ -319,13 +405,15 @@ class Handler(BaseHTTPRequestHandler):
                     data = raw
         # try to parse JSON; on ANY failure (bad JSON, binary, bad encoding)
         # return the decoded text instead of crashing the request thread.
+        # On a parse failure hand back the ORIGINAL bytes. This used to
+        # return the UTF-8-replaced text re-encoded, which silently corrupted
+        # every byte of a binary body -- callers had no way back to the real
+        # file. Callers that only want JSON still see body=None and non-empty
+        # raw, so their "invalid JSON" paths behave exactly as before.
         try:
             return json.loads(data), data
         except Exception:
-            try:
-                return None, data.decode("utf-8", "replace").encode("utf-8")
-            except Exception:
-                return None, raw
+            return None, data
 
     def _handle_generate(self):
         """Compile a servo project into an Arduino sketch and save it."""
@@ -414,7 +502,7 @@ class Handler(BaseHTTPRequestHandler):
 
         body_json, raw = self._read_json_body() if method in ("POST", "PUT", "PATCH", "DELETE") else (None, b"")
         if body_json is None and raw:
-            body_json = raw.decode("utf-8", errors="replace")
+            body_json = body_for_item(raw, self.headers.get("Content-Type", ""))
 
         query = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(parsed.query).items()}
         headers = {k: v for k, v in self.headers.items()}
@@ -472,7 +560,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             webhook_resp = results.get("__webhook_response__")
             if webhook_resp:
-                self._send(webhook_resp["status"], webhook_resp["body"])
+                if not self._send_file_reply(webhook_resp):
+                    self._send(webhook_resp["status"], webhook_resp["body"])
             else:
                 # no Respond node was reached — auto-ack
                 self._send(200, {"ok": True, "note": "workflow finished, no Respond to Webhook node was hit"})
@@ -484,6 +573,31 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _send_file_reply(self, webhook_resp):
+        """A Respond to Webhook node set to 'file' hands over a PATH, not
+        bytes -- so the audio never travels through the engine or the run
+        log. Read it here and send it as the actual reply body.
+
+        Returns True when it handled the reply, False to fall through to the
+        normal JSON path.
+        """
+        body = webhook_resp.get("body")
+        if not isinstance(body, dict) or not body.get("__file__"):
+            return False
+        path = body["__file__"]
+        ctype = body.get("__content_type__") or "application/octet-stream"
+        try:
+            with open(path, "rb") as fh:
+                blob = fh.read()
+        except Exception as e:
+            self._send(500, {"ok": False,
+                             "error": f"could not read {path}: {e}",
+                             "where": "sending file reply"})
+            return True
+        print(f"  [reply] {os.path.basename(path)} ({len(blob)} bytes, {ctype})")
+        self._send(webhook_resp.get("status", 200), blob, is_raw=True, ctype=ctype)
+        return True
+
     def _handle_resume(self, rid, parsed, method):
         """Resume a workflow that paused at a 'Wait for Webhook' node."""
         paused = _paused_runs.get(rid) or _load_paused_run(rid)
@@ -493,7 +607,7 @@ class Handler(BaseHTTPRequestHandler):
 
         body_json, raw = self._read_json_body() if method in ("POST", "PUT", "PATCH", "DELETE") else (None, b"")
         if body_json is None and raw:
-            body_json = raw.decode("utf-8", errors="replace")
+            body_json = body_for_item(raw, self.headers.get("Content-Type", ""))
         query = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(parsed.query).items()}
         resume_data = {
             "method": method,
@@ -534,7 +648,8 @@ class Handler(BaseHTTPRequestHandler):
         _delete_paused_run(rid)
         webhook_resp = results.get("__webhook_response__")
         if webhook_resp:
-            self._send(webhook_resp["status"], webhook_resp["body"])
+            if not self._send_file_reply(webhook_resp):
+                self._send(webhook_resp["status"], webhook_resp["body"])
         else:
             self._send(200, {"ok": True, "resumed": True, "note": "workflow finished"})
 
