@@ -6,10 +6,15 @@ import os
 import json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECTS_DIR = os.path.join(HERE, "projects")
-TABELS_DIR = os.path.join(HERE, "tabels")
-CREDENTIALS_DIR = os.path.join(HERE, "credentials")
-MEMORY_DIR = os.path.join(HERE, "memory_banks")
+# Everything lives under DUGS_DATA_DIR, the same folder dugs_runner.py uses
+# for projects/ and runs/. These used to sit next to the source instead, so a
+# deployed tabel or credential landed in one place and was looked for in
+# another -- which is why credentials had to be mounted by hand.
+DATA_DIR = os.environ.get("DUGS_DATA_DIR", HERE)
+PROJECTS_DIR = os.path.join(DATA_DIR, "projects")
+TABELS_DIR = os.path.join(DATA_DIR, "tabels")
+CREDENTIALS_DIR = os.path.join(DATA_DIR, "credentials")
+MEMORY_DIR = os.path.join(DATA_DIR, "memory_banks")
 DOWNLOADS = os.path.expanduser("~/Downloads")
 
 
@@ -368,9 +373,12 @@ def _guard_not_local_projects(p):
 
 def deploy_project(name):
     """Copy a saved project into the runner's folder, along with whatever
-    Tabels or Memory Banks its nodes actually use -- those land in tabels/
-    and memory_banks/ next to projects/, so the runner's copy of storage.py
-    (same file, same relative layout) finds them without any code change."""
+    Tabels, Memory Banks or credentials its nodes actually use.
+
+    Anything that cannot be sent is collected and raised at the end. It
+    used to be swallowed by a bare `except: pass`, which meant a missing
+    Tabel looked exactly like a successful deploy -- right up until the
+    runner errored with "Tabel does not exist"."""
     p = deploy_path()
     if not p:
         raise RuntimeError("no deploy folder set")
@@ -383,6 +391,7 @@ def deploy_project(name):
         json.dump(data, f, indent=2)
 
     base = _deploy_base()
+    problems = []
 
     # credentials this workflow needs, scrambled on the way out -- without
     # these the runner has no API key and every AI node quietly returns
@@ -395,19 +404,32 @@ def deploy_project(name):
             try:
                 with open(os.path.join(cdir, f"{c}.json"), "w") as f:
                     json.dump(encrypt_credential(load_credential(c)), f, indent=2)
-            except Exception:
-                pass
+            except Exception as e:
+                problems.append(f"credential '{c}': {e}")
 
     tabels, banks = _node_dependencies(data.get("nodes", []))
+
     if tabels:
         tdir = os.path.join(base, "tabels")
         os.makedirs(tdir, exist_ok=True)
         for t in tabels:
             try:
+                # read it the same way the Tabel editor writes it. storage
+                # and tabel_store resolve their folder independently, so
+                # going through storage alone can read an empty folder and
+                # send nothing while reporting success.
+                try:
+                    import tabel_store as _ts
+                    payload = _ts.load_tabel(t)
+                except Exception:
+                    payload = load_tabel(t)
                 with open(os.path.join(tdir, f"{t}.json"), "w") as f:
-                    json.dump(load_tabel(t), f, indent=2)
-            except Exception:
-                pass   # tabel doesn't exist locally -- nothing to send
+                    json.dump(payload, f, indent=2)
+            except Exception as e:
+                problems.append(
+                    f"Tabel '{t}' could not be sent ({e}) -- the runner will "
+                    f"error with \"Tabel '{t}' does not exist\"")
+
     if banks:
         bdir = os.path.join(base, "memory_banks")
         os.makedirs(bdir, exist_ok=True)
@@ -415,10 +437,15 @@ def deploy_project(name):
             try:
                 with open(os.path.join(bdir, f"{b}.json"), "w") as f:
                     json.dump(load_memory_bank(b), f, indent=2)
-            except Exception:
-                pass
+            except Exception as e:
+                problems.append(f"Memory Bank '{b}': {e}")
 
     mark_deployed(name, True)
+
+    if problems:
+        raise RuntimeError(
+            "The workflow was deployed, but parts of it did not go with it:"
+            "\n  - " + "\n  - ".join(problems))
     return dest
 
 
