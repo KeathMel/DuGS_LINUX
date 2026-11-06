@@ -41,6 +41,14 @@ class ScreenNode(DeviceNode):
          "type": "bool", "default": True},
         {"key": "redraw_ms", "label": "Redraw at most every (ms, 0 = every pass)",
          "type": "number", "default": 250},
+        # The panel's size. The generated code does not need it -- the
+        # driver knows its own panel -- but the simulator draws the
+        # screen at exactly this, so you can shove the x/y around and
+        # watch your layout move instead of reflashing to find out.
+        {"key": "width", "label": "Panel width in pixels (for the simulator)",
+         "type": "number", "default": 320},
+        {"key": "height", "label": "Panel height in pixels (for the simulator)",
+         "type": "number", "default": 170},
         {"key": "show_var", "label": "Show a variable instead (name, optional)",
          "type": "text", "default": ""},
     ]
