@@ -27,16 +27,11 @@ import importlib.util
 import os
 import sys
 
+import device_base
 from device_base import DeviceNode
 
 
-def robotics_dir(base: str | None = None) -> str:
-    """Where the robotics nodes live: <repo>/robotics_nodes/"""
-    base = base or os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "robotics_nodes")
-
-
-def discover_device_nodes(module_path: str = None, nodes_dir: str | None = None) -> dict:
+def discover_device_nodes(module_path: str, nodes_dir: str | None = None) -> dict:
     """Load every DeviceNode subclass.
 
     Looks in device_nodes.py AND (optionally) the nodes/ folder, so hardware
@@ -138,6 +133,15 @@ def generate(workflow: dict, registry: dict) -> str:
     """
     nodes_by_name = {n["name"]: n for n in workflow.get("nodes", [])}
 
+    # ---- the board, before anything asks a node for code ----
+    # A Servo node emits Servo.h on an Uno and ledcAttach on an ESP32-S3, so
+    # the target has to be known before the first includes() call, not after.
+    device_base.set_board("arduino")
+    for spec in workflow.get("nodes", []):
+        if spec["type"] == "device.pins":
+            device_base.set_board(spec.get("params", {}).get("board", "arduino"))
+            break
+
     includes: list[str] = []
     pin_defs: list[str] = []
     globs: list[str] = []
@@ -151,18 +155,12 @@ def generate(workflow: dict, registry: dict) -> str:
             if it not in target:
                 target.append(it)
 
-    # ---- declarations first: pin maps, arrays, servo banks. Everything else
-    # refers to these by name, so they must exist before any code that uses
-    # them. They also contribute includes and setup lines (a servo bank has to
-    # attach all its servos at power-on).
+    # ---- pin maps first ----
     for spec in workflow.get("nodes", []):
-        if spec["type"] in ("device.pins", "device.array", "device.servo_array"):
+        if spec["type"] == "device.pins":
             cls = registry.get(spec["type"])
             if cls:
-                dnode = cls(spec["name"], dict(spec.get("params", {})))
-                add_unique(pin_defs, dnode.globals())
-                add_unique(includes, dnode.includes())
-                add_unique(setup_decl, dnode.setup())
+                add_unique(pin_defs, cls(spec["name"], dict(spec.get("params", {}))).globals())
 
     def collect(node):
         add_unique(includes, node.includes())
@@ -179,13 +177,10 @@ def generate(workflow: dict, registry: dict) -> str:
             spec = nodes_by_name.get(name)
             if not spec:
                 return
-            if spec["type"] in ("device.pins", "device.array", "device.servo_array"):
+            if spec["type"] == "device.pins":
                 nxt = _targets(name, workflow, 0)
                 name = nxt[0] if nxt else None
                 continue
-            # State nodes are emitted by the switch builder, not inline
-            if spec["type"] == "device.state":
-                return
 
             cls = registry.get(spec["type"])
             if cls is None:
@@ -232,20 +227,6 @@ def generate(workflow: dict, registry: dict) -> str:
     starts = [n["name"] for n in workflow.get("nodes", []) if n["type"] == "device.on_start"]
     repeats = [n["name"] for n in workflow.get("nodes", []) if n["type"] == "device.on_repeat"]
 
-    # ---- state machine: collect all State nodes ----
-    state_nodes = [n for n in workflow.get("nodes", []) if n["type"] == "device.state"]
-    state_names = []
-    for sn in state_nodes:
-        cls = registry.get("device.state")
-        nm = cls(sn["name"], dict(sn.get("params", {}))).state_name()
-        if nm not in state_names:
-            state_names.append(nm)
-
-    if state_names:
-        # enum of every state + the current-state variable, starting in the first
-        globs.insert(0, f"enum State {{ {', '.join(state_names)} }};")
-        globs.insert(1, f"State state = {state_names[0]};")
-
     if not starts and not repeats:
         for n in _exec_order(workflow)[:1]:
             emit_from(n, loop_body, 1, set())
@@ -257,26 +238,10 @@ def generate(workflow: dict, registry: dict) -> str:
             for t in _targets(r, workflow, 0):
                 emit_from(t, loop_body, 1, set())
 
-    # ---- if there are states, wrap them in a switch inside loop() ----
-    if state_names:
-        sw = ["  switch (state) {"]
-        for sn in state_nodes:
-            cls = registry.get("device.state")
-            nm = cls(sn["name"], dict(sn.get("params", {}))).state_name()
-            sw.append(f"    case {nm}: {{")
-            body = []
-            for t in _targets(sn["name"], workflow, 0):
-                emit_from(t, body, 3, set())
-            sw.extend(body)
-            sw.append("      break;")
-            sw.append("    }")
-        sw.append("  }")
-        # states replace whatever On Repeat produced (they ARE the loop body)
-        loop_body = sw
-
     name = workflow.get("name", "sketch")
     out = []
     out.append(f"// ===== generated by DUGS from project '{name}' =====")
+    out.append(f"// board: {device_base.get_board()}")
     out.append("// Edit the graph in DUGS and re-export; changes here get overwritten.")
     out.append("")
     for i in includes:
