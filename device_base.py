@@ -15,7 +15,29 @@ Each device node can contribute to four parts of the sketch:
 The generator walks the graph in execution order and stitches these together.
 Duplicate includes/globals/setup lines are automatically de-duplicated, so two
 Servo nodes on the same pin don't emit the header twice.
+
+THE BOARD
+    Which board you are building for changes what a node must emit, not
+    just which pin number it writes. A servo on an Uno is Servo.h; on an
+    ESP32-S3 there is no Servo.h at all and it is the LEDC peripheral
+    instead. So the board is read once from the Pins node before
+    generation and every node can ask with self.is_esp32().
 """
+
+# Set once per generate() from the Pins node. Every node module shares
+# this, because they all import this one module.
+BOARD = "arduino"
+
+ESP32_BOARDS = ("esp32", "esp32-s3", "t-display-s3")
+
+
+def set_board(name):
+    global BOARD
+    BOARD = (str(name or "arduino")).strip().lower()
+
+
+def get_board():
+    return BOARD
 
 
 class DeviceNode:
@@ -32,6 +54,23 @@ class DeviceNode:
     def __init__(self, name, params=None):
         self.name = name
         self.params = params or {}
+
+    # ---- the board -----------------------------------------------------
+    def board(self):
+        return get_board()
+
+    def is_esp32(self):
+        """True for anything in the ESP32 family.
+
+        Matters because the whole PWM story is different: no Servo.h, no
+        analogWrite channels, it is ledcAttach/ledcWrite instead.
+        """
+        return get_board() in ESP32_BOARDS
+
+    def is_tdisplay(self):
+        """The LilyGO T-Display-S3 specifically -- it has a screen wired
+        to fixed pins, so the Screen node can configure itself."""
+        return get_board() == "t-display-s3"
 
     # ---- helpers -------------------------------------------------------
     def p(self, key, default=None):

@@ -1268,26 +1268,31 @@ class Editor(QWidget, SettingsPanelMixin, NodePopupMixin):
         sb.setValue(sb.maximum())
 
     def simulate(self):
-        """Run the robotics graph virtually and show what the board would do."""
-        if getattr(self, "_sim_worker", None) and self._sim_worker.isRunning():
-            self._sim_worker.stop()
-            self.sim_btn.setText("\u25b6 Simulate")
-            return
+        """Open the bird's-eye simulator for this graph.
 
+        It used to run the simulation in the background and print the
+        events into the results box. The log is still there -- it is in
+        the bottom of the popup -- but a list of "servo 180" lines never
+        told you whether the horn swings the way you meant, or whether
+        your text fits on the panel. The window shows the board, the
+        pins, the horn and the screen, and it has a run/stop of its own,
+        so this button only has to open it.
+        """
         wf = self.canvas.to_workflow(self.current_project or "untitled")
         if not wf["nodes"]:
             self.results.setText("Canvas empty - drop some nodes first."); return
 
-        self.results.clear()
-        self.canvas.run_states.clear(); self.canvas.edge_counts.clear()
-        self.canvas.running_node = None; self.canvas.update()
-        self._sim_warnings = 0
+        # reuse the window if it is already up, rather than stacking a
+        # new one every time the button is pressed
+        win = getattr(self, "_sim_win", None)
+        if win is not None and win.isVisible():
+            win.close()
 
-        self.sim_btn.setText("\u25a0 Stop")
-        self._sim_worker = SimWorker(wf, loops=None, realtime=True)
-        self._sim_worker.event.connect(self._on_sim_event)
-        self._sim_worker.finished.connect(lambda: self.sim_btn.setText("\u25b6 Simulate"))
-        self._sim_worker.start()
+        from sim_view import SimWindow
+        self._sim_win = SimWindow(wf, self)
+        self._sim_win.show()
+        self._sim_win.raise_()
+        self._sim_win.activateWindow()
 
     def _on_sim_event(self, e):
         """One thing the virtual board just did."""

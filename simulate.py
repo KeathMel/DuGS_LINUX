@@ -45,6 +45,10 @@ import time
 # node types that pick ONE output port instead of flowing straight on
 BRANCH_TYPES = ("device.if", "device.timer", "device.countdown", "device.button")
 
+# nodes that only declare things; they run no action of their own
+DECL_TYPES = ("device.pins", "device.on_start", "device.on_repeat",
+              "device.comment", "device.array", "device.servo_array")
+
 PORT_LABELS = {
     "device.if":        {0: "true", 1: "false"},
     "device.timer":     {0: "done", 1: "waiting"},
@@ -74,6 +78,9 @@ class SimState:
         self.timers = {}        # name -> due time in virtual seconds
         self.counts = {}        # name -> {"end": secs, "fired": bool}
         self.buttons = {}       # name -> {"down": bool, "since": secs, ...}
+        self.arrays = {}        # name -> list of values
+        self.banks = {}         # bank name -> list of pins
+        self.state = None       # current state machine state
         self.screen = ""
         self.loop_count = 0
 
@@ -357,8 +364,57 @@ def simulate(workflow, emit, max_loops=None, realtime=False, stop=None,
             st.vars[into] = 0          # nothing is turning it in here
             ev("read", name, into=into, note="no encoder to turn in a simulation")
 
-        elif t in ("device.pins", "device.on_start", "device.on_repeat"):
-            pass    # declarations / entry points
+        elif t == "device.goto_state":
+            nxt = str(p.get("target", "STATE_1")).strip()
+            if nxt != st.state:
+                ev("state", name, **{"from": st.state, "to": nxt})
+            st.state = nxt
+
+        elif t == "device.array_set":
+            arr = str(p.get("array", "myList")).strip()
+            idx = int(_num(value_of(p.get("index", 0), 0), 0))
+            lst = st.arrays.setdefault(arr, [])
+            while len(lst) <= idx:
+                lst.append(0)
+            v = value_of(p.get("value", 0), 0)
+            op = str(p.get("op", "set"))
+            lst[idx] = {"add": lst[idx] + v, "subtract": lst[idx] - v}.get(op, v)
+            ev("array", name, array=arr, index=idx, value=lst[idx])
+
+        elif t == "device.map":
+            lo1 = _num(value_of(p.get("from_low", 0), 0), 0)
+            hi1 = _num(value_of(p.get("from_high", 1023), 1023), 1023)
+            lo2 = _num(value_of(p.get("to_low", 0), 0), 0)
+            hi2 = _num(value_of(p.get("to_high", 180), 180), 180)
+            x = _num(value_of(p.get("input", 0), 0), 0)
+            out = lo2 if hi1 == lo1 else (x - lo1) * (hi2 - lo2) / (hi1 - lo1) + lo2
+            if p.get("clamp", True):
+                out = max(min(lo2, hi2), min(max(lo2, hi2), out))
+            into = str(p.get("into", "mapped")).strip() or "mapped"
+            st.vars[into] = int(out)
+            ev("var", name, var=into, op="map", value=st.vars[into])
+
+        elif t == "device.servo_move":
+            bank = str(p.get("bank", "servos")).strip()
+            pins = st.banks.get(bank, [])
+            idx = int(_num(value_of(p.get("index", 0), 0), 0))
+            if 0 <= idx < len(pins):
+                pin = pins[idx]
+                angle = max(0, min(180, int(_num(value_of(p.get("angle", 90), 90), 90))))
+                prev = st.servos.get(pin)
+                st.servos[pin] = angle
+                st.attached[pin] = True
+                ev("servo", name, pin=pin, angle=angle, prev=prev, bank=bank, index=idx)
+                hold = _num(p.get("hold_ms", 0), 0)
+                if hold:
+                    ev("wait", name, ms=hold)
+                    advance(hold / 1000.0)
+            else:
+                ev("warn", name,
+                   msg=f"servo bank {bank!r} has no slot {idx} — nothing moved")
+
+        elif t in DECL_TYPES:
+            pass    # declarations / entry points / comments
 
     # ---- branches --------------------------------------------------
     def branch_port(name):
@@ -468,6 +524,32 @@ def simulate(workflow, emit, max_loops=None, realtime=False, stop=None,
             name = nxt[0] if nxt else None
 
     # ---- go --------------------------------------------------------
+    # state machine: name -> the State node that owns it
+    state_nodes = {}
+    for nd in workflow.get("nodes", []):
+        if nd["type"] == "device.state":
+            nm = str((nd.get("params") or {}).get("name", "STATE_1")).strip()
+            state_nodes.setdefault(nm, nd["name"])
+    if state_nodes:
+        st.state = next(iter(state_nodes))
+
+    # servo banks, so a Servo Move knows which pin a slot means
+    for nd in workflow.get("nodes", []):
+        if nd["type"] == "device.servo_array":
+            pr = nd.get("params") or {}
+            bank = str(pr.get("name", "servos")).strip()
+            pins = [x.strip() for x in str(pr.get("pins", "")).split(",") if x.strip()]
+            st.banks[bank] = [_resolve_pin(x, pin_map) for x in pins]
+            start = int(_num(pr.get("start", 0), 0))
+            for pin in st.banks[bank]:
+                st.servos[pin] = start
+        if nd["type"] == "device.array":
+            pr = nd.get("params") or {}
+            vals = [_num(x, 0) for x in str(pr.get("values", "")).split(",") if x.strip()]
+            size = int(_num(pr.get("size", 4), 4))
+            st.arrays[str(pr.get("name", "myList")).strip()] = (
+                vals + [0] * max(0, size - len(vals)))[:max(size, len(vals))]
+
     emit({"t": 0.0, "kind": "power_on", "node": "", **board_info(workflow)})
 
     starts = [n["name"] for n in workflow.get("nodes", []) if n["type"] == "device.on_start"]
@@ -499,7 +581,17 @@ def simulate(workflow, emit, max_loops=None, realtime=False, stop=None,
         st.loop_count = n
         drain_presses()
         before = st.t
-        if repeats_body is None:
+        if state_nodes:
+            # codegen turns State nodes into a switch that REPLACES the
+            # loop body, so the simulation has to do the same or it
+            # would run every state at once
+            cur = state_nodes.get(st.state)
+            if cur is None:
+                ev("warn", msg=f"no State node named {st.state!r}")
+            else:
+                for tgt in _targets(cur, conns, 0):
+                    run_from(tgt, set())
+        elif repeats_body is None:
             for r in repeats:
                 for tgt in _targets(r, conns, 0):
                     run_from(tgt, set())
