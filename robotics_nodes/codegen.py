@@ -108,6 +108,20 @@ def _chain_from(start: str, workflow: dict) -> list[str]:
     return order
 
 
+def _condition(node, port):
+    """The test for one output port of a branch node.
+
+    None means "no test" -- the last port of an if/else-if chain, which
+    compiles to the bare `else`. Older branch nodes define condition()
+    with no argument and only have two ports, so they are called the old
+    way and port 1 is their else.
+    """
+    try:
+        return node.condition(port)
+    except TypeError:
+        return node.condition() if port == 0 else None
+
+
 def _targets(name, workflow, port=0):
     """Nodes wired to a specific OUTPUT PORT of `name`."""
     out = []
@@ -191,22 +205,42 @@ def generate(workflow: dict, registry: dict) -> str:
             pad = "  " * indent
             out_lines.append(f"{pad}// --- {name} ---")
 
-            # ---- BRANCH: real if / else ----
+            # ---- BRANCH: a real if / else if / else chain ----
             if getattr(cls, "IS_BRANCH", False):
-                out_lines.append(f"{pad}if ({node.condition()}) {{")
-                # a Timer restarts itself the moment it fires, so it can run
-                # again on the next pass
-                if hasattr(node, "rearm"):
-                    out_lines.append(f"{pad}  {node.rearm()}")
-                for t in _targets(name, workflow, 0):      # port 0 = TRUE / done
-                    emit_from(t, out_lines, indent + 1, set(visited))
-                false_targets = _targets(name, workflow, 1)  # port 1 = FALSE
-                if false_targets:
-                    out_lines.append(f"{pad}}} else {{")
-                    for t in false_targets:
+                # Some branch nodes need work done BEFORE the test -- a
+                # Button has to poll itself once per pass, whichever way
+                # the branch then goes. Nodes with nothing to do return
+                # an empty list here, which is every older node.
+                for l in node.loop():
+                    out_lines.append(f"{pad}{l}")
+
+                nports = max(2, int(getattr(cls, "OUTPUTS", 2)))
+                opened = False
+                for port in range(nports):
+                    targets = _targets(name, workflow, port)
+                    if not targets:
+                        continue
+                    cond = _condition(node, port)
+                    if cond is None:
+                        if not opened:
+                            # no test at all: just emit it inline
+                            for t in targets:
+                                emit_from(t, out_lines, indent, set(visited))
+                            continue
+                        out_lines.append(f"{pad}}} else {{")
+                    else:
+                        kw = "} else if" if opened else "if"
+                        out_lines.append(f"{pad}{kw} ({cond}) {{")
+                        opened = True
+                    # a Timer restarts itself the moment it fires, so it
+                    # can run again on the next pass
+                    if port == 0 and hasattr(node, "rearm"):
+                        out_lines.append(f"{pad}  {node.rearm()}")
+                    for t in targets:
                         emit_from(t, out_lines, indent + 1, set(visited))
-                out_lines.append(f"{pad}}}")
-                return     # both branches consumed everything downstream
+                if opened:
+                    out_lines.append(f"{pad}}}")
+                return     # the branches consumed everything downstream
 
             # ---- BLOCK: for-loop wrapping everything after it ----
             if getattr(cls, "IS_BLOCK", False):

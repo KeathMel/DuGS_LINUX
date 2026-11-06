@@ -51,10 +51,17 @@ class EncoderNode(DeviceNode):
         {"key": "max", "label": "Maximum (when applying)", "type": "text", "default": "10"},
     ]
 
+    def _tag(self):
+        """Per-node state name. It used to be one shared `_encLastA`, so a
+        second encoder in the same graph overwrote the first one's last
+        reading and both produced garbage."""
+        raw = str(self.p("into", "turn")).strip()
+        return "".join(c if (c.isalnum() or c == "_") else "_" for c in raw) or "turn"
+
     def globals(self):
         into = self.p("into", "turn")
         g = [f"int {into} = 0;",
-             "int _encLastA = HIGH;"]
+             f"int _enc_{self._tag()}_lastA = HIGH;"]
         tgt = str(self.p("target", "")).strip()
         if tgt:
             g.append(f"int {tgt} = 0;")
@@ -63,7 +70,7 @@ class EncoderNode(DeviceNode):
     def setup(self):
         return [f"pinMode({self.pin('pin_a', '2')}, INPUT_PULLUP);",
                 f"pinMode({self.pin('pin_b', '3')}, INPUT_PULLUP);",
-                f"_encLastA = digitalRead({self.pin('pin_a', '2')});"]
+                f"_enc_{self._tag()}_lastA = digitalRead({self.pin('pin_a', '2')});"]
 
     def loop(self):
         a = self.pin("pin_a", "2")
@@ -73,10 +80,10 @@ class EncoderNode(DeviceNode):
             "{",
             f"  int _a = digitalRead({a});",
             f"  {into} = 0;",
-            "  if (_a != _encLastA && _a == LOW) {",
+            f"  if (_a != _enc_{self._tag()}_lastA && _a == LOW) {{",
             f"    {into} = (digitalRead({b}) != _a) ? +1 : -1;",
             "  }",
-            "  _encLastA = _a;",
+            f"  _enc_{self._tag()}_lastA = _a;",
             "}",
         ]
         tgt = str(self.p("target", "")).strip()
